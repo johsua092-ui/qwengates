@@ -35,7 +35,7 @@ export interface ConfigSchema {
 export const DEFAULT_CONFIG: ConfigSchema = {
   PORT: '8080',
   HOST: '',
-  API_KEY: '',
+  API_KEY: 'OXYX',
   TOOL_CALLING: 'true',
   CLEAN_OUTPUT: 'true',
   STREAMING_MODE: 'auto',
