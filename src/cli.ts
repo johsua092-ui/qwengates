@@ -13,7 +13,7 @@ const out = (s: string) => process.stdout.write(s + '\n');
 function err(msg: string) {
   console.error(`[qg] ${msg}`);
 }
-const DEFAULT_PORT = '26405';
+const DEFAULT_PORT = '8080';
 
 function showHelp() {
   out('');
@@ -30,7 +30,7 @@ function showHelp() {
   out('  help           Show this help message');
   out('');
   out('OPTIONS');
-  out('  --port <n>     Override port (default: from config or 26405)');
+  out('  --port <n>     Override port (default: from config or 8080)');
   out('  --browser <e>  Browser engine: chromium, firefox, chrome, edge');
   out('  --host <addr>  Bind address (default: from config or localhost)');
   out('');
@@ -43,7 +43,7 @@ function showHelp() {
   out('  qg help               Show this message');
   out('');
   out('ACCOUNT MANAGEMENT');
-  out('  Use the web dashboard at http://localhost:26405/dashboard/accounts');
+  out('  Use the web dashboard at http://localhost:8080/dashboard/accounts');
   out('  to add, remove, and manage your Qwen accounts.');
   out('');
 }

@@ -108,7 +108,7 @@ export async function initAuth(onAccountReady?: (email: string) => Promise<void>
     logStore.log(
       'warn',
       'auth',
-      'No saved accounts found. Use the dashboard at http://localhost:26405/dashboard/accounts to add accounts.',
+      'No saved accounts found. Use the dashboard at http://localhost:8080/dashboard/accounts to add accounts.',
     );
     return;
   }

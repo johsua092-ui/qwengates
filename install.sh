@@ -1,19 +1,10 @@
-#!/bin/bash
-# ============================================================================
-#  Qwen Gate — One-Command Installer
-# ============================================================================
-#  Usage:
-#    curl -sSL https://raw.githubusercontent.com/youssefvdel/qwen-gate/main/install.sh | bash
-#
-#  Clones the repo, installs Bun + dependencies, creates config, and
-#  symlinks the CLI so you can run `qg` from anywhere.
-# ============================================================================
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
-
+# ── Config ───────────────────────────────────────────────────────────
 REPO_URL="https://github.com/youssefvdel/qwen-gate.git"
 INSTALL_DIR="./qwen-gate"
-DEFAULT_PORT=26405
+DEFAULT_PORT=8080
 
 # ── Colors & symbols ─────────────────────────────────────────────────
 RED='\033[0;31m'   GREEN='\033[0;32m'  YELLOW='\033[0;33m'

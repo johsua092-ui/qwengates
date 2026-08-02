@@ -33,7 +33,7 @@ export interface ConfigSchema {
 }
 
 export const DEFAULT_CONFIG: ConfigSchema = {
-  PORT: '26405',
+  PORT: '8080',
   HOST: '',
   API_KEY: '',
   TOOL_CALLING: 'true',
@@ -174,8 +174,8 @@ export class ConfigService {
     return defaultValue;
   }
 
-  /** Get the validated server port (1-65535). */
-  getPort(defaultValue: number = 26405): number {
+  /** Get the validated server port (1-65535). Defaults to 8080 for Railway compatibility. */
+  getPort(defaultValue: number = 8080): number {
     const port = parseInt(this.get('PORT'), 10);
     if (isNaN(port) || port < 1 || port > 65535) return defaultValue;
     return port;
@@ -210,7 +210,7 @@ export function updateClaudeCodeSettings(cfg: ConfigSchema): void {
 
   if (enabled) {
     const host = cfg.HOST || 'localhost';
-    const port = cfg.PORT || '26405';
+    const port = cfg.PORT || '8080';
     const baseUrl = `http://${host}:${port}`;
     const settings = {
       _comment: 'Managed by qwen-gate — CLAUDE_CODE_PROXY toggle in dashboard',

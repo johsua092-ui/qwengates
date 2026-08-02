@@ -1,10 +1,9 @@
 # qwen-gate Windows Installer
-# Run: powershell -ExecutionPolicy Bypass -c "curl.exe -sSL https://raw.githubusercontent.com/youssefvdel/qwen-gate/main/install.ps1 | iex"
+# Run: powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/youssefvdel/qwen-gate/main/install.ps1 | iex"
 
-$ErrorActionPreference = "Stop"
 $Repo = "https://github.com/youssefvdel/qwen-gate.git"
 $Dir = "$PWD\qwen-gate"
-$DefaultPort = 26405
+$DefaultPort = 8080
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

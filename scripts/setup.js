@@ -7,7 +7,7 @@ const PROJECT_ROOT = join(__dirname, '..');
 const CONFIG_PATH = join(PROJECT_ROOT, 'config.json');
 
 const DEFAULTS = {
-  PORT: '26405',
+  PORT: '8080',
   HOST: '',
   API_KEY: '',
   BROWSER: 'chromium',

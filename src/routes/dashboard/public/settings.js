@@ -116,7 +116,7 @@ function renderDeleteAllChatsSection() {
 function renderClaudeCodeInfo() {
   if (!settingsData['CLAUDE_CODE_PROXY'] || settingsData['CLAUDE_CODE_PROXY'] !== 'true') return '';
   var host = settingsData['HOST'] || 'localhost';
-  var port = settingsData['PORT'] || '26405';
+  var port = settingsData['PORT'] || '8080';
   var baseUrl = 'http://' + host + ':' + port;
   return (
     '<div class="settings-section" style="margin-top:24px">' +
