@@ -4,9 +4,9 @@ WORKDIR /app
 COPY package.json bun.lock* package-lock.json* ./
 RUN bun install --frozen-lockfile 2>/dev/null || bun install || bun install
 COPY . .
-RUN bun run build 2>&1 || echo "Build completed with warnings"
-# Copy .mjs worker files (not compiled by tsc) into dist/
-RUN mkdir -p dist/worker && cp src/worker/*.mjs dist/worker/ 2>/dev/null || true
+RUN bun run build
+# Copy .mjs worker files into dist/ (tsc doesn't compile .mjs files)
+RUN mkdir -p dist/worker && cp src/worker/*.mjs dist/worker/
 
 # ── Production stage ────────────────────────────────────────────────
 FROM oven/bun:alpine AS production
