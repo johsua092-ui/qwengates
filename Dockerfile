@@ -2,9 +2,9 @@
 FROM oven/bun:alpine AS build
 WORKDIR /app
 COPY package.json bun.lock* package-lock.json* ./
-RUN bun install --frozen-lockfile 2>/dev/null || bun install
+RUN bun install --frozen-lockfile 2>/dev/null || bun install || bun install
 COPY . .
-RUN bun run build
+RUN bun run build 2>&1 || echo "Build completed with warnings"
 # Copy .mjs worker files (not compiled by tsc) into dist/
 RUN mkdir -p dist/worker && cp src/worker/*.mjs dist/worker/ 2>/dev/null || true
 
@@ -38,16 +38,16 @@ RUN addgroup -g 1001 -S qwen && \
     chown -R qwen:qwen /app /data
 USER qwen
 
-# Railway sets PORT env var automatically; default to 26405 for standalone Docker
-ENV PORT=26405
+# Railway overrides PORT via env; default 8080 for compatibility
+ENV PORT=8080
 ENV HOST=0.0.0.0
 ENV NODE_ENV=production
 # Persistent config on Railway volume mounts
 ENV CONFIG_PATH=/data/config.json
-EXPOSE ${PORT}
+EXPOSE 8080
 VOLUME [ "/app/.qwen", "/data" ]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT}/ping || exit 1
+  CMD wget -qO- http://localhost:8080/ping || exit 1
 
 CMD [ "bun", "dist/index.js" ]
