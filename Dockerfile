@@ -21,7 +21,7 @@ COPY . .
 # Install deps
 RUN bun install
 
-# Create data dirs
+# Create data dirs and non-root user
 RUN mkdir -p /app/.qwen /app/logs /data && \
     addgroup -g 1001 -S qwen 2>/dev/null || true && \
     adduser -S qwen -u 1001 -G qwen 2>/dev/null || true && \
@@ -33,7 +33,6 @@ ENV HOST=0.0.0.0
 ENV NODE_ENV=production
 ENV CONFIG_PATH=/data/config.json
 EXPOSE 8080
-VOLUME ["/app/.qwen", "/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget -qO- http://localhost:8080/ping || exit 1
