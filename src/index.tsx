@@ -268,7 +268,10 @@ if (import.meta.main) {
 
   const port = config.getPort();
   const hostArg = process.argv.indexOf('--host');
-  const host = hostArg !== -1 && process.argv[hostArg + 1] ? process.argv[hostArg + 1] : config.get('HOST') || 'localhost';
+  const cliHost = hostArg !== -1 && process.argv[hostArg + 1] ? process.argv[hostArg + 1] : null;
+  // Railway and cloud platforms need 0.0.0.0 to accept external connections
+  const isCloud = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENV || !!process.env.RAILWAY_SERVICE_ID || !!process.env.RENDER;
+  const host = cliHost || config.get('HOST') || (isCloud ? '0.0.0.0' : 'localhost');
 
   // Show banner immediately on startup
   process.stdout.write(`\x1b[31m

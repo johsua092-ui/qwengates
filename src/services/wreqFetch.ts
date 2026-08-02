@@ -8,6 +8,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logCrash, logEvent, logSessionCreate } from '../utils/wreqCrashLogger.ts';
@@ -18,7 +19,27 @@ let workerStartPromise: Promise<string> | null = null;
 let workerPort: number | null = null;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKER_PATH = resolve(__dirname, '../worker/wreq-worker.mjs');
+
+/**
+ * Resolve wreq-worker.mjs path. In production (dist/), .mjs files are not
+ * compiled by tsc, so we look in both dist/worker/ and src/worker/.
+ */
+function resolveWorkerPath(): string {
+  // Priority 1: alongside compiled output (dist/worker/)
+  const distPath = resolve(__dirname, '../worker/wreq-worker.mjs');
+  if (existsSync(distPath)) return distPath;
+  // Priority 2: source directory (dev mode with Bun)
+  const srcPath = resolve(__dirname, '../../src/worker/wreq-worker.mjs');
+  if (existsSync(srcPath)) return srcPath;
+  // Priority 3: absolute fallback from project root
+  const projectRoot = resolve(__dirname, '../..');
+  const projectPath = resolve(projectRoot, 'src/worker/wreq-worker.mjs');
+  if (existsSync(projectPath)) return projectPath;
+  // Default — will fail with clear ENOENT error
+  return distPath;
+}
+
+const WORKER_PATH = resolveWorkerPath();
 
 async function ensureWorker(): Promise<string> {
   if (workerBaseUrl) return workerBaseUrl;
@@ -35,7 +56,9 @@ function getPort(): number {
 async function startWorker(): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const port = getPort();
-    const proc = spawn('node', [WORKER_PATH], {
+    // Use NODE_BIN env var for Railway/nixpacks custom node path
+    const nodeBin = process.env.NODE_BIN || 'node';
+    const proc = spawn(nodeBin, [WORKER_PATH], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, WREQ_WORKER_PORT: String(port) },
     });
