@@ -55,7 +55,7 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
     const ampState: AmplificationGuardState = { rawInputBytes: 0, emittedOutputBytes: 0, triggered: false };
 
     try {
-      heartbeatInterval = createHeartbeat(streamWriter);
+      heartbeatInterval = createHeartbeat(streamWriter, completionId, body.model);
       await writeEvent(streamWriter, buildChunkEvent(completionId, body.model, [makeChoice({ role: 'assistant', content: '' })]));
 
       streamReader = stream.getReader();
@@ -162,14 +162,30 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
   });
 }
 
-function createHeartbeat(streamWriter: any): any {
+/**
+ * Send periodic data events to keep Qwen Code CLI's idle timer alive.
+ *
+ * Qwen Code CLI only counts `data:` SSE events (not `: comment` lines) toward
+ * stream activity. During long thinking phases Qwen models can go 240+ seconds
+ * without emitting content chunks — this heartbeat injects a minimal
+ * OpenAI-compatible empty-delta chunk every 10 s so the client never times out.
+ */
+function createHeartbeat(streamWriter: any, completionId: string, model: string): any {
   const hb = setInterval(async () => {
     try {
-      await streamWriter.write(': keep-alive\n\n');
+      const heartbeatChunk = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        system_fingerprint: 'fp_qwen_gate',
+        choices: [{ index: 0, delta: {}, logprobs: null }],
+      };
+      await streamWriter.write(`data: ${JSON.stringify(heartbeatChunk)}\n\n`);
     } catch {
       clearInterval(hb);
     }
-  }, 15000);
+  }, 10_000);
   if (hb && typeof hb.unref === 'function') hb.unref();
   return hb;
 }

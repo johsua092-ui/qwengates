@@ -230,6 +230,20 @@ export async function handlePostStreamCompletion(
       return;
     }
 
+    // ── Empty response safety net ────────────────────────────────
+    // Qwen thinking models can exhaust all tokens in reasoning, leaving
+    // zero content.  Without a minimal fallback Qwen Code CLI shows
+    // "Model stream ended with empty response text" and the user has to
+    // manually type "lanjutkan".  Inject a silent fallback so streaming
+    // clients see a non-empty completion and continue naturally.
+    if (!streamState.lastFullContent && effectiveToolCallCount === 0) {
+      const fallback = 'Done.';
+      streamState.lastFullContent = fallback;
+      streamState.completionTokens += Math.ceil(fallback.length / 4);
+      await writeEvent(streamWriter, buildChunkEvent(completionId, model, [makeChoice({ content: fallback })]));
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
     const usage = buildUsage(streamState.promptTokens, streamState.completionTokens, streamState.reasoningBuffer);
     const finalFinishReason = effectiveToolCallCount > 0 ? 'tool_calls' : 'stop';
 
