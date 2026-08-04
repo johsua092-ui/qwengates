@@ -126,8 +126,11 @@ test('set - updates in-memory value', () => {
   writeFileSync(path, JSON.stringify({}), 'utf-8');
   const svc = new ConfigService(path);
 
+  saveEnv('PORT');
+  delete process.env.PORT;
   svc.set('PORT', '55555');
   assert.equal(svc.get('PORT'), '55555');
+  restoreEnv('PORT');
 
   try {
     unlinkSync(path);
@@ -185,6 +188,9 @@ test('reset - reloads from disk', () => {
   writeFileSync(path, JSON.stringify({ PORT: 'initial' }), 'utf-8');
   const svc = new ConfigService(path);
 
+  saveEnv('PORT');
+  delete process.env.PORT;
+
   // Change in-memory
   svc.set('PORT', 'modified');
   assert.equal(svc.get('PORT'), 'modified');
@@ -195,6 +201,8 @@ test('reset - reloads from disk', () => {
   // Reset should reload from disk
   svc.reset();
   assert.equal(svc.get('PORT'), 'disk-value');
+
+  restoreEnv('PORT');
 
   try {
     unlinkSync(path);
@@ -225,6 +233,9 @@ test('validate - warns on negative PORT values', () => {
   writeFileSync(path, JSON.stringify({ PORT: '-1' }), 'utf-8');
   const svc = new ConfigService(path);
 
+  saveEnv('PORT');
+  delete process.env.PORT;
+
   const warnings: string[] = [];
   const origLog = logStore.log.bind(logStore);
   logStore.log = (_level: string, _category: string, msg: string) => {
@@ -235,6 +246,7 @@ test('validate - warns on negative PORT values', () => {
     assert.ok(warnings.some((w) => w.includes('PORT') && w.includes('invalid')));
   } finally {
     logStore.log = origLog;
+    restoreEnv('PORT');
   }
 
   try {

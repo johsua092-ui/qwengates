@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { config } from '../services/configService.ts';
+import { CRITICAL_THINKING_SYSTEM_PROMPT } from '../services/criticalThinkingPrompt.ts';
 import { modelRouter } from '../services/modelRouter.ts';
 import { buildFeatureConfig, createQwenStream, fetchQwenModels } from '../services/qwen.ts';
 import { sessionPool } from '../services/sessionPool.ts';
@@ -61,6 +63,16 @@ export function buildQwenMessages(messages: any[], body: any, availableTokens: n
   const segments: string[] = [];
   const systemParts: string[] = [];
   const toolResultObjects: any[] = [];
+
+  // ── Critical Thinking Mode ──────────────────────────────────────
+  // Inject structured chain-of-thought system prompt when enabled.
+  // This prompt instructs Qwen to always think step-by-step before
+  // answering, estimate complexity, show progress, and provide
+  // confidence levels. Controlled via CRITICAL_THINKING config.
+  const criticalThinkingEnabled = config.getBool('CRITICAL_THINKING', true);
+  if (criticalThinkingEnabled) {
+    systemParts.unshift(CRITICAL_THINKING_SYSTEM_PROMPT);
+  }
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];

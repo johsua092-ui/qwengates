@@ -7,6 +7,7 @@ export interface ConfigSchema {
   PORT: string;
   HOST: string;
   API_KEY: string;
+  BROWSER: string;
   TOOL_CALLING: string;
   CLEAN_OUTPUT: string;
   STREAMING_MODE: string;
@@ -30,12 +31,14 @@ export interface ConfigSchema {
   MODELS_CACHE_TTL_MS: string;
   DARK_MODE: string;
   CLAUDE_CODE_PROXY: string;
+  CRITICAL_THINKING: string;
 }
 
 export const DEFAULT_CONFIG: ConfigSchema = {
   PORT: '8080',
   HOST: '',
   API_KEY: 'OXYX',
+  BROWSER: 'chromium',
   TOOL_CALLING: 'true',
   CLEAN_OUTPUT: 'true',
   STREAMING_MODE: 'auto',
@@ -59,6 +62,7 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   MODELS_CACHE_TTL_MS: '3600000',
   DARK_MODE: 'false',
   CLAUDE_CODE_PROXY: 'false',
+  CRITICAL_THINKING: 'true',
 };
 
 const CONFIG_KEYS = new Set<string>(Object.keys(DEFAULT_CONFIG));

@@ -31,7 +31,9 @@
     "quality": "biome check --write src/ && oxlint --fix-suggestions --format agent src/ && bun test",
     "husky-init": "npx husky init",
     "qg": "bun src/cli.ts",
-    "qg:restart": "bun src/cli.ts restart"
+    "qg:restart": "bun src/cli.ts restart",
+    "cli": "bun src/cli-client.ts",
+    "chat": "bun src/cli-client.ts"
   },
   "keywords": [
     "qwen",

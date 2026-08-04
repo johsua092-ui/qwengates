@@ -31,6 +31,7 @@ const DEFAULTS = {
   RETRY_BACKOFF_MULTIPLIER: '2',
   RETRY_ENABLED: 'true',
   CLAUDE_CODE_PROXY: 'false',
+  CRITICAL_THINKING: 'true',
 };
 
 /**

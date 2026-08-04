@@ -30,6 +30,13 @@ var SETTINGS_SECTIONS = [
     ],
   },
   {
+    title: 'Critical Thinking',
+    desc: 'Inject system prompt that forces chain-of-thought reasoning, progress tracking, and confidence levels.',
+    fields: [
+      { key: 'CRITICAL_THINKING', label: 'CRITICAL_THINKING', type: 'checkbox' },
+    ],
+  },
+  {
     title: 'Session & Auth',
     desc: 'Token lifetimes, refresh windows, and session cleanup.',
     fields: [
