@@ -32,9 +32,11 @@ ENV PORT=8080
 ENV HOST=0.0.0.0
 ENV NODE_ENV=production
 ENV CONFIG_PATH=/data/config.json
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV CHROME_BIN=/usr/bin/chromium-browser
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://localhost:8080/ping || exit 1
+  CMD sh -c "wget -qO- http://127.0.0.1:\${PORT:-8080}/ping || exit 1"
 
 CMD ["bun", "src/index.tsx"]

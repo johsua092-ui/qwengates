@@ -74,7 +74,7 @@ export function isValidKey(key: string): key is keyof ConfigSchema {
 }
 
 function getConfigFilePath(): string {
-  return projectPath('config.json');
+  return process.env.CONFIG_PATH || projectPath('config.json');
 }
 
 export class ConfigService {
