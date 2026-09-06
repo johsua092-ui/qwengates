@@ -73,6 +73,7 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
           resolvedEmail: currentResolvedEmail, ampState,
           qwenAbortController: currentAbort, qwenLogFile: ctx.qwenLogFile,
           emittedToolCallCount: 0,
+          bodyTools: body.tools,
         };
         const bufferRef = { text: '' };
         const loopResult = await runStreamLoop(c, reader, streamState, streamCtx, ampState, bufferRef);
@@ -81,7 +82,8 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
             { streamWriter, completionId, model: body.model, streamState, ampState, logId,
               resolvedEmail: currentResolvedEmail, emittedToolCallCount: streamCtx.emittedToolCallCount,
               buffer: loopResult.buffer, enableContentFiltering: cleanOutput,
-              includeUsage: !!body.stream_options?.include_usage },
+              includeUsage: !!body.stream_options?.include_usage,
+              bodyTools: body.tools },
             { reader, heartbeatInterval, chatId: currentSession.chatId,
               sessionHeaders: currentSessionHeaders, email: currentResolvedEmail, sessionPool },
           );

@@ -180,9 +180,6 @@ export function buildQwenMessages(messages: any[], body: any, availableTokens: n
     }
   }
 
-  // Single user message with all history wrapped in <user>/<assist> tags
-  let prompt = segments.length > 0 ? segments.join('\n\n') : '';
-
   const featureConfig = buildFeatureConfig(true);
 
   if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
@@ -190,27 +187,51 @@ export function buildQwenMessages(messages: any[], body: any, availableTokens: n
     localMcp['★'] = {};
     const toolNames: string[] = [];
     for (const t of body.tools) {
-      const fn = t.function || {};
-      localMcp['★'][fn.name] = {
-        description: fn.description || '',
-        input_schema: fn.parameters || { type: 'object', properties: {} },
+      const fn = (t as any).function || t;
+      const fnName = fn.name || (t as any).name;
+      if (!fnName) continue;
+      const schema = fn.parameters || fn.input_schema || (t as any).parameters || (t as any).input_schema || { type: 'object', properties: {} };
+      const desc = fn.description || (t as any).description || '';
+      localMcp['★'][fnName] = {
+        description: desc,
+        input_schema: schema,
       };
-      toolNames.push(`${fn.name}${fn.description ? ` (${fn.description})` : ''}`);
+      toolNames.push(`${fnName}${desc ? ` (${desc})` : ''}`);
     }
     featureConfig.local_mcp = localMcp;
-    // ponytail: tool schema in system prompt as textual fallback for models
-    // that don't honor feature_config.local_mcp consistently
+
     const toolDescriptions = body.tools
       .map((t: any) => {
-        const fn = t.function || {};
-        const params = fn.parameters?.properties ? Object.keys(fn.parameters.properties).join(', ') : '';
-        return `- ${fn.name}${fn.description ? `: ${fn.description}` : ''}${params ? ` (params: ${params})` : ''}`;
+        const fn = t.function || t;
+        const fnName = fn.name || t.name;
+        if (!fnName) return null;
+        const schema = fn.parameters || fn.input_schema || t.parameters || t.input_schema;
+        const desc = fn.description || t.description || '';
+        const params = schema?.properties ? Object.keys(schema.properties).join(', ') : '';
+        return `- ${fnName}${desc ? `: ${desc}` : ''}${params ? ` (params: ${params})` : ''}`;
       })
+      .filter(Boolean)
       .join('\n');
-    systemParts.push(
-      `You have access to the following tools:\n${toolDescriptions}\n\nTo call a tool, respond with the tool call in the appropriate format.`,
-    );
+
+    const toolInstruction = [
+      `[AVAILABLE TOOLS]`,
+      `You have access to the following tools:`,
+      toolDescriptions,
+      `\nCRITICAL TOOL USAGE RULES:`,
+      `1. You MUST ONLY use the tools listed above by their EXACT names.`,
+      `2. NEVER call "terminal", "execute_code", or any other tool name that is not in the list above.`,
+      `3. To run shell commands or scripts, strictly use the corresponding tool from the list above (e.g. bash).`,
+      `4. Respond with the tool call in the appropriate format using valid JSON arguments.`,
+    ].join('\n');
+
+    // Inline tool instructions directly at the top of the prompt text
+    // so Qwen sees available tools immediately, even if context.txt is pending or ignored.
+    segments.unshift(`<system-instructions>\n${toolInstruction}\n</system-instructions>`);
+    systemParts.push(toolInstruction);
   }
+
+  // Single user message with all history wrapped in <user>/<assist> tags
+  let prompt = segments.length > 0 ? segments.join('\n\n') : '';
 
   // Single message (Qwen API only accepts 1 message per chat)
   const fid = randomUUID();

@@ -16,6 +16,7 @@ import {
 import { config } from '../services/configService.ts';
 
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
+import { healToolCall } from '../tools/toolHealer.ts';
 import { extractLocalMcpToolCalls } from './chatStreamingHelpers.ts';
 
 export interface NonStreamingContext {
@@ -130,7 +131,7 @@ function processAnswerDelta(delta: any, state: StreamProcessorState, ctx: NonStr
   if (contentToCheck.length > 0) {
     const { toolCalls } = parseXmlToolCalls(contentToCheck);
     if (toolCalls.length > 0) {
-      const parsed = toolCalls.map((tc, i) => xmlToolCallToParsed(tc, i));
+      const parsed = toolCalls.map((tc, i) => healToolCall(xmlToolCallToParsed(tc, i), ctx.body.tools));
       processToolCallsThroughGuard(parsed, state.toolCallsOut, {
         logId: ctx.logId,
         toolSpamGuard: state.toolSpamGuard,
@@ -200,7 +201,8 @@ function parseQwenResponse(line: string, state: StreamProcessorState, ctx: NonSt
     // Qwen returns tool calls in the local_tool phase via extra.local_mcp["★"].
     // These may arrive with or without XML tool call blocks in the answer phase,
     // so we must extract them here to avoid losing tool calls.
-    const localToolCalls = extractLocalMcpToolCalls(chunk);
+    const rawLocalToolCalls = extractLocalMcpToolCalls(chunk);
+    const localToolCalls = rawLocalToolCalls.map((tc) => healToolCall(tc, ctx.body.tools));
     if (localToolCalls.length > 0) {
       // Pass the flat {id, name, arguments} list straight through —
       // processToolCallsThroughGuard expects that shape. Re-wrapping into
@@ -217,10 +219,10 @@ function parseQwenResponse(line: string, state: StreamProcessorState, ctx: NonSt
   }
 }
 
-function flushAndDetectLoops(state: StreamProcessorState, logId: string): void {
+function flushAndDetectLoops(state: StreamProcessorState, logId: string, clientTools?: unknown[]): void {
   const { toolCalls } = parseXmlToolCalls(state.lastFullContent);
   if (toolCalls.length > 0) {
-    const parsed = toolCalls.map((tc, i) => xmlToolCallToParsed(tc, i));
+    const parsed = toolCalls.map((tc, i) => healToolCall(xmlToolCallToParsed(tc, i), clientTools));
     // Filter out already-processed tool calls to avoid corrupting ToolSpamGuard state
     // Stable dedup: sort object keys so property order doesn't cause false negatives
     const stableArgs = (args: Record<string, unknown>): string => {
@@ -359,7 +361,7 @@ async function processContentChunks(state: StreamProcessorState, ctx: NonStreami
     return c.json({ error: { message: cleanMessage } }, upstreamError.status);
   }
 
-  flushAndDetectLoops(state, logId);
+  flushAndDetectLoops(state, logId, ctx.body.tools);
   const response = buildResponseFromState(state, ctx);
   logStore.finalizeRequest(logId);
   return response;

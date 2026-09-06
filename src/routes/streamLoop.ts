@@ -1,10 +1,11 @@
 import { config } from '../services/configService.ts';
 import { logStore } from '../services/logStore.ts';
-import { cleanTextOfXmlArtifacts, parseXmlToolCalls } from '../tools/xmlToolParser.ts';
+import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
+import { healToolCall } from '../tools/toolHealer.ts';
 import { type AmplificationGuardState, checkAmplificationGuard, getSnapshotDelta, parseQwenErrorPayload } from './chatHelpers.ts';
 import { filterContentPipeline, processStreamData, type StreamProcessingCtx, type StreamProcessingState } from './chatStreamingHelpers.ts';
 import { checkFinalAmplification, scheduleCleanup } from './cleanupHelpers.ts';
-import { buildChunkEvent, buildUsage, makeChoice, writeEvent, writeReasoningEvent } from './writeHelpers.ts';
+import { buildChunkEvent, buildUsage, makeChoice, writeEvent, writeReasoningEvent, writeToolCallEvent } from './writeHelpers.ts';
 
 /** Shared TextDecoder — stateless, safe to reuse across streams */
 export const sharedDecoder = new TextDecoder();
@@ -113,6 +114,7 @@ export async function handlePostStreamCompletion(
     buffer: string;
     enableContentFiltering: boolean;
     includeUsage: boolean;
+    bodyTools?: unknown[];
   },
   cleanup: {
     reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -131,11 +133,12 @@ export async function handlePostStreamCompletion(
     ampState,
     logId,
     resolvedEmail,
-    emittedToolCallCount,
     buffer,
     enableContentFiltering,
     includeUsage,
+    bodyTools,
   } = args;
+  let emittedToolCallCount = args.emittedToolCallCount;
   const { reader, heartbeatInterval, chatId, sessionHeaders, email, sessionPool } = cleanup;
 
   try {
@@ -153,16 +156,19 @@ export async function handlePostStreamCompletion(
     const finalToolCalls = streamState.lastFullContent ? parseXmlToolCalls(streamState.lastFullContent).toolCalls.length : 0;
     const effectiveToolCallCount = Math.max(emittedToolCallCount, finalToolCalls);
 
-    // Populate parsedToolCalls from full accumulated content (per-chunk extraction
-    // never sees complete blocks since individual SSE deltas are too small).
+    // Emit and heal any un-emitted tool calls from full accumulated content
     if (streamState.lastFullContent && effectiveToolCallCount > emittedToolCallCount) {
       const parsed = parseXmlToolCalls(streamState.lastFullContent).toolCalls;
-      // Avoid double-counting: only add tool calls that weren't already emitted
-      for (const tc of parsed.slice(emittedToolCallCount)) {
+      const unEmitted = parsed.slice(emittedToolCallCount);
+      for (const [i, tc] of unEmitted.entries()) {
+        const parsedTc = xmlToolCallToParsed(tc, emittedToolCallCount + i);
+        const healed = healToolCall(parsedTc, bodyTools);
         logStore.updateEntry(logId, (entry) => {
-          entry.parsedToolCalls.push({ name: tc.name, args: JSON.stringify(tc.parameters) });
+          entry.parsedToolCalls.push({ name: healed.name, args: JSON.stringify(healed.arguments) });
         });
+        await writeToolCallEvent(streamWriter, completionId, model, healed, emittedToolCallCount + i);
       }
+      emittedToolCallCount += unEmitted.length;
     }
 
     const pipelineResult = filterContentPipeline(streamState.lastFullContent, enableContentFiltering);

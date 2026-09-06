@@ -155,17 +155,29 @@ function finishReasonToAnthropic(reason: string): string {
   return 'end_turn';
 }
 
-// ponytail: normalize Qwen tool name case to match Claude Code conventions
+// ponytail: normalize Qwen tool name case and map hallucinated tools to Claude Code conventions
 function normalizeToolName(name: string): string {
+  const cleanName = name.replace(/^★-/, '').replace(/^functions\./, '').replace(/^local_mcp:/, '');
+  const lower = cleanName.toLowerCase();
   const CASE_MAP: Record<string, string> = {
     bash: 'Bash',
+    terminal: 'Bash',
+    execute_command: 'Bash',
+    run_command: 'Bash',
+    execute_code: 'Bash',
+    sh: 'Bash',
+    cmd: 'Bash',
+    shell: 'Bash',
     read: 'Read',
+    read_file: 'Read',
     edit: 'Edit',
+    edit_file: 'Edit',
     write: 'Write',
+    write_file: 'Write',
     websearch: 'WebSearch',
     web_search: 'WebSearch',
   };
-  return CASE_MAP[name] || name;
+  return CASE_MAP[lower] || CASE_MAP[cleanName] || cleanName;
 }
 
 // ponytail: simple formatter for Anthropic content blocks in log display

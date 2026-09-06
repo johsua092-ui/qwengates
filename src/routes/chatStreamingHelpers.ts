@@ -1,6 +1,7 @@
 import { logStore } from '../services/logStore.ts';
 import { logQwenSSE } from '../services/qwenLogger.ts';
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
+import { healToolCall } from '../tools/toolHealer.ts';
 import type { ParsedToolCall } from '../types/openai.ts';
 import { filterContent } from '../utils/contentFilter.ts';
 import { THINK_TAG_NAMES, TOOL_CALL_KEYWORDS } from '../utils/tagNames.ts';
@@ -118,6 +119,7 @@ export interface StreamProcessingCtx {
   qwenAbortController: AbortController;
   qwenLogFile?: string;
   sseEventCount?: number;
+  bodyTools?: unknown[];
 }
 
 export type ProcessStreamResult = 'continue' | 'break_stream';
@@ -196,7 +198,8 @@ export async function processStreamData(data: any, state: StreamProcessingState,
     const deltaPhase = data.choices[0].delta.phase;
     // Always extract and emit local MCP tool calls before breaking
     if (deltaPhase === 'local_tool') {
-      const localToolCalls = extractLocalMcpToolCalls(data);
+      const rawLocalToolCalls = extractLocalMcpToolCalls(data);
+      const localToolCalls = rawLocalToolCalls.map((tc) => healToolCall(tc, ctx.bodyTools));
       const newToolCalls = localToolCalls.filter((tc) => {
         const key = `${tc.name}:${JSON.stringify(tc.arguments)}`;
         if (state.loggedToolCalls.has(key)) return false;
@@ -350,7 +353,8 @@ export async function processStreamData(data: any, state: StreamProcessingState,
 
     for (const [i, tc] of newToolCalls.entries()) {
       const parsed = xmlToolCallToParsed(tc, ctx.emittedToolCallCount + i);
-      await writeToolCallEvent(streamWriter, completionId, model, parsed, ctx.emittedToolCallCount + i);
+      const healed = healToolCall(parsed, ctx.bodyTools);
+      await writeToolCallEvent(streamWriter, completionId, model, healed, ctx.emittedToolCallCount + i);
     }
     ctx.emittedToolCallCount += newToolCalls.length;
   }
