@@ -162,7 +162,7 @@ export class ToolSpamGuard {
   private threshold: number;
   private history: Array<{ key: string }>;
 
-  constructor(window = 8, threshold = 2) {
+  constructor(window = 20, threshold = 5) {
     this.window = window;
     this.threshold = threshold;
     this.history = [];
@@ -322,9 +322,9 @@ export interface ToolCallProcessingOptions {
 
 export function processToolCallsThroughGuard(toolCalls: any[], toolCallsOut: any[], options: ToolCallProcessingOptions): void {
   const { label, logParsed = false, logId, toolSpamGuard, correctionPrompts, maxToolCalls } = options;
-  const effectiveMax = maxToolCalls ?? 8;
+  const effectiveMax = maxToolCalls && maxToolCalls > 0 ? maxToolCalls : 0;
 
-  if (toolCalls.length > effectiveMax) {
+  if (effectiveMax > 0 && toolCalls.length > effectiveMax) {
     logStore.log(
       'debug',
       'chat',
@@ -345,14 +345,14 @@ export function processToolCallsThroughGuard(toolCalls: any[], toolCallsOut: any
       correctionPrompts.push(spamCheck.correctionPrompt);
       continue;
     }
-    if (toolCallsOut.length >= maxToolCalls) {
+    if (effectiveMax > 0 && toolCallsOut.length >= effectiveMax) {
       logStore.log(
         'debug',
         'chat',
-        `  [🛑 TOOL LIMIT${label ? ' ' + label : ''}] Hit ${maxToolCalls} tool calls per turn, dropping excess`,
+        `  [🛑 TOOL LIMIT${label ? ' ' + label : ''}] Hit ${effectiveMax} tool calls per turn, dropping excess`,
       );
       correctionPrompts.push(
-        `[TOOL CALL LIMIT] Reached maximum of ${maxToolCalls} tool calls per turn. Analyze existing results and respond to the user.`,
+        `[TOOL CALL LIMIT] Reached maximum of ${effectiveMax} tool calls per turn. Analyze existing results and respond to the user.`,
       );
       break;
     }

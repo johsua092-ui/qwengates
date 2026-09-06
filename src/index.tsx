@@ -6,6 +6,7 @@ import { cors } from 'hono/cors';
 
 import { rateLimitMiddleware, startAutoCleanup, stopAutoCleanup } from './middleware/rateLimit.ts';
 import { accountsRouter } from './routes/accounts.ts';
+import { tempEmailRouter } from './routes/tempEmail.ts';
 import { anthropicMessages } from './routes/anthropic.ts';
 import { chatCompletions } from './routes/chat.ts';
 import { configRouter } from './routes/config.ts';
@@ -151,6 +152,7 @@ app.use('/api/accounts*', async (c, next) => {
   return bearerAuth({ token: apiKey })(c, next);
 });
 app.route('/api/accounts', accountsRouter);
+app.route('/api/temp-email', tempEmailRouter);
 
 // Usage stats API — per-account × per-model daily counters (protected)
 app.use('/api/usage*', async (c, next) => {

@@ -13,7 +13,7 @@ import {
   ToolSpamGuard,
 } from './chatHelpers.ts';
 
-const MAX_TOOL_CALLS_PER_TURN = 8;
+import { config } from '../services/configService.ts';
 
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { extractLocalMcpToolCalls } from './chatStreamingHelpers.ts';
@@ -135,7 +135,7 @@ function processAnswerDelta(delta: any, state: StreamProcessorState, ctx: NonStr
         logId: ctx.logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: MAX_TOOL_CALLS_PER_TURN,
+        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
         logParsed: true,
       });
     }
@@ -210,7 +210,7 @@ function parseQwenResponse(line: string, state: StreamProcessorState, ctx: NonSt
         logId: ctx.logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: MAX_TOOL_CALLS_PER_TURN,
+        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
         logParsed: true,
       });
     }
@@ -244,7 +244,7 @@ function flushAndDetectLoops(state: StreamProcessorState, logId: string): void {
         logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: MAX_TOOL_CALLS_PER_TURN,
+        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
         label: 'xml-flush',
         logParsed: true,
       });

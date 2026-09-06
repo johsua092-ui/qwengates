@@ -32,6 +32,7 @@ export interface ConfigSchema {
   DARK_MODE: string;
   CLAUDE_CODE_PROXY: string;
   CRITICAL_THINKING: string;
+  CAPSOLVER_API_KEY: string;
 }
 
 export const DEFAULT_CONFIG: ConfigSchema = {
@@ -42,7 +43,7 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   TOOL_CALLING: 'true',
   CLEAN_OUTPUT: 'true',
   STREAMING_MODE: 'auto',
-  MAX_TOOL_CALLS_PER_RESPONSE: '3',
+  MAX_TOOL_CALLS_PER_RESPONSE: '0',
   QWEN_FETCH_TIMEOUT_MS: '30000',
   AUTH_TOKEN_MAX_AGE_MS: '28800000',
   AUTH_REFRESH_BEFORE_MS: '300000',
@@ -63,6 +64,7 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   DARK_MODE: 'false',
   CLAUDE_CODE_PROXY: 'false',
   CRITICAL_THINKING: 'true',
+  CAPSOLVER_API_KEY: '',
 };
 
 const CONFIG_KEYS = new Set<string>(Object.keys(DEFAULT_CONFIG));

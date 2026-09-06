@@ -150,6 +150,19 @@ async function tryCheckCaptcha(page: any, context: any, attempt: number): Promis
   try {
     const hasCaptcha = await detectCaptcha(page);
     if (!hasCaptcha) return null;
+    
+    const { getCaptchaConfig, solveCaptcha } = await import('./captchaSolver.ts');
+    const captchaConfig = getCaptchaConfig();
+    if (captchaConfig) {
+      logStore.log('info', 'browser', 'Attempting auto-captcha solve via Capsolver...');
+      const solveResult = await solveCaptcha(page);
+      if (solveResult.success) {
+        return null; // Continue polling
+      } else {
+        logStore.log('warn', 'browser', 'Auto-captcha solve failed, falling back to manual.');
+      }
+    }
+
     return 'captcha';
   } catch {
     logStore.log('warn', 'browser', 'captcha detection failed in tryCheckCaptcha');

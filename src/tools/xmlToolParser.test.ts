@@ -131,6 +131,13 @@ describe('xmlToolParser', () => {
       assert.equal(result.toolCalls[3].name, 'qwengate-aislop_aislop_fix');
     });
 
+    it('preserves repeated identical calls and strips every repeated XML block', () => {
+      const repeated = `${TOOL_CALL_AISLOP_SCAN}\n${TOOL_CALL_AISLOP_SCAN}`;
+      const result = parseXmlToolCalls(repeated);
+      assert.equal(result.toolCalls.length, 2, 'identical calls are separate client invocations');
+      assert.equal(result.cleanedText.trim(), '', 'all repeated XML blocks are removed from content');
+    });
+
     it('extracts tool calls from real SSE chunks (accumulated)', () => {
       // Simulate accumulating SSE chunks as processStreamData does
       let accumulated = '';

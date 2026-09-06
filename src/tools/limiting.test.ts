@@ -1,6 +1,9 @@
 import { test } from 'bun:test';
 import assert from 'node:assert';
+import { processToolCallsThroughGuard, ToolSpamGuard } from '../routes/chatHelpersCore.ts';
+import { truncateToolResult } from '../routes/compressToolResult.ts';
 import { streamChunks } from '../tests/helpers.ts';
+import { parseToolCallLimit } from './toolCallLimit.ts';
 
 /**
  * Tool call limiting tests.
@@ -17,25 +20,6 @@ import { streamChunks } from '../tests/helpers.ts';
  * Truncate large tool results to prevent context pollution.
  * Smart elision: keep first ~40% + last ~40%, with a marker in the middle.
  */
-export function truncateToolResult(content: string, maxBytes: number = 4096): string {
-  if (!content) return '';
-  const encoded = new TextEncoder().encode(content);
-  if (encoded.length <= maxBytes) return content;
-
-  const headBytes = Math.floor(maxBytes * 0.45);
-  const tailBytes = Math.floor(maxBytes * 0.45);
-
-  // Decode head as much as possible without breaking UTF-8
-  const headView = new Uint8Array(encoded.buffer, 0, headBytes);
-  const head = new TextDecoder('utf-8', { fatal: false }).decode(headView);
-
-  const tailStart = encoded.length - tailBytes;
-  // Ensure we don't start in the middle of a multi-byte character
-  const tailView = new Uint8Array(encoded.buffer, tailStart, tailBytes);
-  const tail = new TextDecoder('utf-8', { fatal: false }).decode(tailView);
-
-  return `${head}\n... [truncated ${content.length - headBytes - tailBytes} chars] ...\n${tail}`;
-}
 
 test('truncateToolResult: returns short content unchanged', () => {
   const short = 'Hello world';
@@ -66,40 +50,55 @@ test('truncateToolResult: respects exact boundary', () => {
 
 // ─── MAX_TOOL_CALLS_PER_RESPONSE env config ─────────────────────────────────
 
-test('MAX_TOOL_CALLS_PER_RESPONSE: reads env var with default 2', () => {
-  const saved = process.env.MAX_TOOL_CALLS_PER_RESPONSE;
-  delete process.env.MAX_TOOL_CALLS_PER_RESPONSE;
-  const val = parseInt(process.env.MAX_TOOL_CALLS_PER_RESPONSE || '2', 10);
-  assert.strictEqual(val, 2);
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = saved;
+test('MAX_TOOL_CALLS_PER_RESPONSE: uses the configured positive integer', () => {
+  assert.strictEqual(parseToolCallLimit('5', 3), 5);
 });
 
-test('MAX_TOOL_CALLS_PER_RESPONSE: reads env var override', () => {
-  const saved = process.env.MAX_TOOL_CALLS_PER_RESPONSE;
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = '5';
-  const val = parseInt(process.env.MAX_TOOL_CALLS_PER_RESPONSE, 10);
-  assert.strictEqual(val, 5);
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = saved;
+test('MAX_TOOL_CALLS_PER_RESPONSE: zero enables unlimited mode', () => {
+  assert.strictEqual(parseToolCallLimit('0', 3), null);
 });
 
-test('MAX_TOOL_CALLS_PER_RESPONSE: invalid value falls back to 2', () => {
-  const saved = process.env.MAX_TOOL_CALLS_PER_RESPONSE;
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = 'not-a-number';
-  const val = parseInt(process.env.MAX_TOOL_CALLS_PER_RESPONSE, 10);
-  const fallback = !isNaN(val) && val > 0 ? val : 2;
-  assert.strictEqual(fallback, 2);
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = saved;
-});
-
-test('MAX_TOOL_CALLS_PER_RESPONSE: zero or negative falls back to 2', () => {
-  const saved = process.env.MAX_TOOL_CALLS_PER_RESPONSE;
-  for (const bad of ['0', '-1']) {
-    process.env.MAX_TOOL_CALLS_PER_RESPONSE = bad;
-    const val = parseInt(process.env.MAX_TOOL_CALLS_PER_RESPONSE, 10);
-    const fallback = !isNaN(val) && val > 0 ? val : 2;
-    assert.strictEqual(fallback, 2, `should fallback for ${bad}`);
+test('MAX_TOOL_CALLS_PER_RESPONSE: explicit unlimited aliases enable unlimited mode', () => {
+  for (const value of ['unlimited', 'none', 'infinity']) {
+    assert.strictEqual(parseToolCallLimit(value, 3), null, value);
   }
-  process.env.MAX_TOOL_CALLS_PER_RESPONSE = saved;
+});
+
+test('MAX_TOOL_CALLS_PER_RESPONSE: malformed and negative values use the fallback', () => {
+  for (const bad of ['', 'not-a-number', '-1', '2.5']) {
+    assert.strictEqual(parseToolCallLimit(bad, 3), 3, bad);
+  }
+});
+
+function calls(count: number) {
+  return Array.from({ length: count }, (_, i) => ({ id: `call-${i}`, name: `tool-${i}`, arguments: { i } }));
+}
+
+test('tool guard: configured limit applies across parser batches', () => {
+  const output: any[] = [];
+  const options = {
+    logId: 'limit-test',
+    toolSpamGuard: new ToolSpamGuard(),
+    correctionPrompts: [] as string[],
+    maxToolCalls: 3,
+  };
+  processToolCallsThroughGuard(calls(2), output, options);
+  processToolCallsThroughGuard(calls(2).map((call, i) => ({ ...call, id: `next-${i}`, name: `next-${i}` })), output, options);
+  assert.strictEqual(output.length, 3);
+  assert.match(options.correctionPrompts[0], /maximum of 3/i);
+});
+
+test('tool guard: unlimited mode does not truncate calls', () => {
+  const output: any[] = [];
+  const options = {
+    logId: 'unlimited-test',
+    toolSpamGuard: new ToolSpamGuard(),
+    correctionPrompts: [] as string[],
+    maxToolCalls: null,
+  };
+  processToolCallsThroughGuard(calls(20), output, options);
+  assert.strictEqual(output.length, 20);
+  assert.deepStrictEqual(options.correctionPrompts, []);
 });
 
 // ─── Streaming chunk truncation ──────────────────────────────────────────────
