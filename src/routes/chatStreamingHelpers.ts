@@ -73,6 +73,32 @@ export function extractLocalMcpToolCalls(sseData: any): ParsedToolCall[] {
 
 // ── Per-chunk stream processing ────────────────────────────────────
 
+/**
+ * Canonical dedup key for a tool call: name + stable-serialized arguments.
+ *
+ * Used to suppress the SAME logical call arriving twice — Qwen reports a call
+ * both as a `local_mcp` SSE event and as an XML block, and the two paths may
+ * serialize argument keys in different orders. Sorting keys makes the key
+ * order-independent so the duplicate is actually caught.
+ *
+ * IMPORTANT: this is only for matching a call against ITSELF across the two
+ * transports. It must never be used to collapse two genuinely distinct calls
+ * the model made in the same turn.
+ */
+export function toolCallDedupKey(name: string, args: unknown): string {
+  let serialized: string;
+  if (args === null || typeof args !== 'object') {
+    serialized = JSON.stringify(args);
+  } else {
+    const obj = args as Record<string, unknown>;
+    serialized = `{${Object.keys(obj)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`)
+      .join(',')}}`;
+  }
+  return `${name}:${serialized}`;
+}
+
 export interface StreamProcessingState {
   targetResponseId: string | null;
   nextParentId: string | null;
@@ -201,7 +227,7 @@ export async function processStreamData(data: any, state: StreamProcessingState,
       const rawLocalToolCalls = extractLocalMcpToolCalls(data);
       const localToolCalls = rawLocalToolCalls.map((tc) => healToolCall(tc, ctx.bodyTools));
       const newToolCalls = localToolCalls.filter((tc) => {
-        const key = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+        const key = toolCallDedupKey(tc.name, tc.arguments);
         if (state.loggedToolCalls.has(key)) return false;
         state.loggedToolCalls.add(key);
         return true;
@@ -336,8 +362,14 @@ export async function processStreamData(data: any, state: StreamProcessingState,
   const newToolCallContent = state.lastFullContent;
   const { toolCalls: xmlToolCalls } = parseXmlToolCalls(newToolCallContent);
   if (xmlToolCalls.length > 0) {
-    const newToolCalls = xmlToolCalls.filter((tc) => {
-      const key = `${tc.name}:${JSON.stringify(tc.parameters)}`;
+    // Heal BEFORE dedup so the key is computed from the FINAL name/arguments
+    // that the client will actually receive. Deduping on the raw XML name is
+    // wrong: the same logical call reaches us as `★-Bash` (local_mcp) and
+    // `<function=bash>` (XML), which heal to the same client tool — keying on
+    // the pre-heal form lets both through and the client sees it twice.
+    const healedCalls = xmlToolCalls.map((tc) => healToolCall(xmlToolCallToParsed(tc, 0), ctx.bodyTools));
+    const newToolCalls = healedCalls.filter((tc) => {
+      const key = toolCallDedupKey(tc.name, tc.arguments);
       if (state.loggedToolCalls.has(key)) return false;
       state.loggedToolCalls.add(key);
       return true;
@@ -346,14 +378,12 @@ export async function processStreamData(data: any, state: StreamProcessingState,
     if (newToolCalls.length > 0) {
       logStore.updateEntry(logId, (entry) => {
         for (const tc of newToolCalls) {
-          entry.parsedToolCalls.push({ name: tc.name, args: JSON.stringify(tc.parameters) });
+          entry.parsedToolCalls.push({ name: tc.name, args: JSON.stringify(tc.arguments) });
         }
       });
     }
 
-    for (const [i, tc] of newToolCalls.entries()) {
-      const parsed = xmlToolCallToParsed(tc, ctx.emittedToolCallCount + i);
-      const healed = healToolCall(parsed, ctx.bodyTools);
+    for (const [i, healed] of newToolCalls.entries()) {
       await writeToolCallEvent(streamWriter, completionId, model, healed, ctx.emittedToolCallCount + i);
     }
     ctx.emittedToolCallCount += newToolCalls.length;

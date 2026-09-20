@@ -23,7 +23,6 @@ function functionNameFromTag(tag: string): string | null {
 
 export function parseXmlToolCalls(text: string): { toolCalls: ParsedXmlToolCall[]; cleanedText: string } {
   const toolCalls: ParsedXmlToolCall[] = [];
-  const unique = new Set<string>();
   let cleanedText = text;
 
   // Fast path: skip the expensive regex exec loop when there's no tool call content
@@ -32,6 +31,14 @@ export function parseXmlToolCalls(text: string): { toolCalls: ParsedXmlToolCall[
 
   // Semantics: <keyword=NAME...chars...> body </keyword>
   // Matches the opening <keyword=, captures until first >, then lazily until </keyword> or end.
+  //
+  // NOTE: no dedup here. Two structurally identical blocks are two distinct
+  // client-side invocations (e.g. the model legitimately runs `bash` twice with
+  // the same command, or reads the same file again after an edit). Collapsing
+  // them silently drops a tool call the model intended to make — the client
+  // then sees a wrong/partial tool sequence and errors out. Duplicate
+  // suppression belongs to the caller (loggedToolCalls / ToolSpamGuard), which
+  // dedups against already-emitted calls instead of against each other.
   FUNCTION_BLOCK_RE.lastIndex = 0;
   const re = FUNCTION_BLOCK_RE;
   const sections: string[] = [];
@@ -39,11 +46,12 @@ export function parseXmlToolCalls(text: string): { toolCalls: ParsedXmlToolCall[
   let match: RegExpExecArray | null;
 
   while ((match = re.exec(text)) !== null) {
-    if (unique.has(match[0])) continue;
-    unique.add(match[0]);
-
     const name = functionNameFromTag(match[0]);
-    if (!name) continue;
+    if (!name) {
+      // Not a real tool call block — keep the text and advance past the
+      // opening tag so the scan doesn't stall on the same position.
+      continue;
+    }
 
     const closingTag = `</${FKW}>`;
     const closingIndex = match[0].lastIndexOf(closingTag);

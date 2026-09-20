@@ -3,7 +3,13 @@ import { logStore } from '../services/logStore.ts';
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
 import { type AmplificationGuardState, checkAmplificationGuard, getSnapshotDelta, parseQwenErrorPayload } from './chatHelpers.ts';
-import { filterContentPipeline, processStreamData, type StreamProcessingCtx, type StreamProcessingState } from './chatStreamingHelpers.ts';
+import {
+  filterContentPipeline,
+  processStreamData,
+  toolCallDedupKey,
+  type StreamProcessingCtx,
+  type StreamProcessingState,
+} from './chatStreamingHelpers.ts';
 import { checkFinalAmplification, scheduleCleanup } from './cleanupHelpers.ts';
 import { buildChunkEvent, buildUsage, makeChoice, writeEvent, writeReasoningEvent, writeToolCallEvent } from './writeHelpers.ts';
 
@@ -156,13 +162,25 @@ export async function handlePostStreamCompletion(
     const finalToolCalls = streamState.lastFullContent ? parseXmlToolCalls(streamState.lastFullContent).toolCalls.length : 0;
     const effectiveToolCallCount = Math.max(emittedToolCallCount, finalToolCalls);
 
-    // Emit and heal any un-emitted tool calls from full accumulated content
+    // Emit and heal any tool calls that were NOT already emitted during streaming.
+    //
+    // Selection is by identity (name + canonical args) against what we already
+    // emitted — NOT by slicing at `emittedToolCallCount`. Slicing by count is
+    // only correct when the emitted calls happen to be a prefix of the XML
+    // calls, which is NOT true in practice: local_mcp and XML report the same
+    // calls in different orders, so a count-based slice can skip a genuinely
+    // new call and re-emit one the client already has.
     if (streamState.lastFullContent && effectiveToolCallCount > emittedToolCallCount) {
       const parsed = parseXmlToolCalls(streamState.lastFullContent).toolCalls;
-      const unEmitted = parsed.slice(emittedToolCallCount);
-      for (const [i, tc] of unEmitted.entries()) {
-        const parsedTc = xmlToolCallToParsed(tc, emittedToolCallCount + i);
-        const healed = healToolCall(parsedTc, bodyTools);
+      const unEmitted = parsed
+        .map((tc) => healToolCall(xmlToolCallToParsed(tc, emittedToolCallCount), bodyTools))
+        .filter((healed) => {
+          const key = toolCallDedupKey(healed.name, healed.arguments);
+          if (streamState.loggedToolCalls.has(key)) return false;
+          streamState.loggedToolCalls.add(key);
+          return true;
+        });
+      for (const [i, healed] of unEmitted.entries()) {
         logStore.updateEntry(logId, (entry) => {
           entry.parsedToolCalls.push({ name: healed.name, args: JSON.stringify(healed.arguments) });
         });

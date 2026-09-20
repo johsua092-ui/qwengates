@@ -805,14 +805,39 @@ async function handleAnthropicStream(
         logStore.log('debug', 'chat', `[Anthropic] XML tool: name=${tc.name} id=${tc.id} args=${JSON.stringify(tc.arguments)}`);
       }
 
+      // Merge XML-derived and local_mcp tool calls.
+      //
+      // Qwen frequently reports the SAME logical call twice: once as a
+      // `local_mcp` SSE event and once as an XML block in the answer text.
+      // Merging must therefore compare name + arguments, NOT `id`: the two
+      // sources synthesize their own `call_<uuid>` ids, so an id-based check
+      // never matches and the client receives every tool call twice (double
+      // execution / "tool error" on the second run).
+      const canonicalArgs = (args: unknown): string => {
+        if (args === null || typeof args !== 'object') return JSON.stringify(args);
+        const obj = args as Record<string, unknown>;
+        return `{${Object.keys(obj)
+          .sort()
+          .map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`)
+          .join(',')}}`;
+      };
+      const toolCallKey = (name: string, args: unknown) => `${name}::${canonicalArgs(args)}`;
+
       const allToolCalls = [...xmlParsedCalls];
+      const seenKeys = new Set(allToolCalls.map((e) => toolCallKey(e.name, e.arguments)));
       for (const ltc of localToolCallsAccum) {
-        if (!allToolCalls.some((e) => e.id === ltc.id)) {
-          logStore.log('debug', 'chat', `[Anthropic] Merging local_mcp tool: name=${ltc.name} id=${ltc.id}`);
-          allToolCalls.push(ltc);
-        } else {
-          logStore.log('debug', 'chat', `[Anthropic] Skipping duplicate local_mcp tool (already in XML): name=${ltc.name} id=${ltc.id}`);
+        const key = toolCallKey(ltc.name, ltc.arguments);
+        if (seenKeys.has(key)) {
+          logStore.log(
+            'debug',
+            'chat',
+            `[Anthropic] Skipping duplicate local_mcp tool (already in XML): name=${ltc.name} id=${ltc.id}`,
+          );
+          continue;
         }
+        logStore.log('debug', 'chat', `[Anthropic] Merging local_mcp tool: name=${ltc.name} id=${ltc.id}`);
+        seenKeys.add(key);
+        allToolCalls.push(ltc);
       }
       logStore.log(
         'debug',
@@ -821,11 +846,12 @@ async function handleAnthropicStream(
       );
 
       // Log raw tool calls from Qwen before filtering
+      const xmlCallIds = new Set(xmlParsedCalls.map((e) => e.id));
       for (const tc of allToolCalls) {
         logStore.log(
           'debug',
           'chat',
-          `[Anthropic] Raw tool call from Qwen: name=${tc.name} id=${tc.id} args=${JSON.stringify(tc.arguments)} source=${tc.id.startsWith('call_xml') ? 'xml' : 'local_mcp'}`,
+          `[Anthropic] Raw tool call from Qwen: name=${tc.name} id=${tc.id} args=${JSON.stringify(tc.arguments)} source=${xmlCallIds.has(tc.id) ? 'xml' : 'local_mcp'}`,
         );
       }
 

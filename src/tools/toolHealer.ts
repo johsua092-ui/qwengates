@@ -103,6 +103,21 @@ export function healToolCall(tc: ParsedToolCall, clientTools?: unknown): ParsedT
     return { ...tc, name: rawName };
   }
 
+  // 0. Exact match on the UNTOUCHED name, before any prefix stripping.
+  //
+  // MCP tools are named `mcp__<server>__<tool>`. Stripping the `mcp__` prefix
+  // (as cleanRawToolName does) produces `fs__read_file`, which the client does
+  // NOT recognize → "tool does not exist". If the client registered the name
+  // as-is, that registration always wins.
+  const untouched = (tc.name || '').trim();
+  if (untouched && clientNames.includes(untouched)) {
+    return { ...tc, name: untouched };
+  }
+  const untouchedCase = clientNames.find((n) => n.toLowerCase() === untouched.toLowerCase());
+  if (untouched && untouchedCase) {
+    return { ...tc, name: untouchedCase };
+  }
+
   // 1. Exact match
   if (clientNames.includes(rawName)) {
     return { ...tc, name: rawName };
@@ -169,9 +184,33 @@ export function healToolCall(tc: ParsedToolCall, clientTools?: unknown): ParsedT
     }
   }
 
-  // 6. Single tool client fallback
-  // If client only registered 1 single tool and model called a generic action, map to that tool
-  if (targetName === rawName && clientNames.length === 1) {
+  // 6. Single-tool client fallback
+  //
+  // Deliberately narrow. A single-tool client (e.g. Claude Code exposing only
+  // `Bash`) often gets a generic action name from Qwen (`run`, `exec`,
+  // `do_it`). Collapsing that to the one available tool keeps the turn alive.
+  //
+  // This MUST NOT fire for arbitrary names: doing so rewrites a perfectly
+  // valid MCP/tool call (e.g. `mcp__fs__read`) into `Bash`, which the client
+  // then rejects with "tool does not exist" or, worse, executes with args that
+  // do not match the schema — the exact "tool error although everything is
+  // normal" symptom.
+  //
+  // Terminal/code aliases are already handled by steps 4 and 5, so only
+  // alias-free generic names are listed here.
+  const GENERIC_ACTION_NAMES = [
+    'run',
+    'exec',
+    'execute',
+    'do_it',
+    'run_command',
+    'exec_command',
+    'run_shell',
+    'execute_command',
+    'tool',
+    'action',
+  ];
+  if (targetName === rawName && clientNames.length === 1 && GENERIC_ACTION_NAMES.includes(lower)) {
     targetName = clientNames[0];
   }
 

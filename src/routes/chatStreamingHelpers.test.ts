@@ -109,12 +109,21 @@ test('reproduces and tests fix for corrupted tool call when split across chunks'
   const logEntry = (logStore as any).entryMap.get(logId);
   assert.ok(logEntry, 'log entry should exist');
   assert.strictEqual(logEntry.parsedToolCalls.length, 1, 'should have parsed exactly one tool call');
-  assert.strictEqual(logEntry.parsedToolCalls[0].name, '★-edit', 'tool call name should be ★-edit');
+  // Name is recorded AFTER healing (prefixes stripped): the log must match what
+  // the client receives, otherwise `★-edit` shows in the dashboard while the
+  // client is sent `edit`.
+  assert.strictEqual(logEntry.parsedToolCalls[0].name, 'edit', "tool call name should be healed to 'edit'");
 
   // 2. Verify that the emitted tool call event is sent to the client
   const toolCallEvents = writtenEvents.filter((e) => e.includes('tool_calls'));
   assert.strictEqual(toolCallEvents.length, 1, 'should have emitted exactly one tool call event to client');
-  assert.ok(toolCallEvents[0].includes('★-edit') || toolCallEvents[0].includes('edit'), 'emitted tool call should be edit');
+  assert.ok(toolCallEvents[0].includes('edit'), 'emitted tool call should be edit');
+
+  // 2b. What we log must be exactly what we send — no drift between the two.
+  assert.ok(
+    toolCallEvents[0].includes(`"${logEntry.parsedToolCalls[0].name}"`),
+    'emitted tool call name must match the recorded parsed tool call name',
+  );
 
   // 3. Verify that the content streamed to the client does NOT contain leaked function tags/parameters
   // Reconstruct emitted content from content events

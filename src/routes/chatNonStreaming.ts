@@ -17,7 +17,7 @@ import { config } from '../services/configService.ts';
 
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
-import { extractLocalMcpToolCalls } from './chatStreamingHelpers.ts';
+import { extractLocalMcpToolCalls, toolCallDedupKey } from './chatStreamingHelpers.ts';
 
 export interface NonStreamingContext {
   c: Context;
@@ -224,21 +224,17 @@ function flushAndDetectLoops(state: StreamProcessorState, logId: string, clientT
   if (toolCalls.length > 0) {
     const parsed = toolCalls.map((tc, i) => healToolCall(xmlToolCallToParsed(tc, i), clientTools));
     // Filter out already-processed tool calls to avoid corrupting ToolSpamGuard state
-    // Stable dedup: sort object keys so property order doesn't cause false negatives
-    const stableArgs = (args: Record<string, unknown>): string => {
-      const keys = Object.keys(args).sort();
-      return '{' + keys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(args[k])}`).join(',') + '}';
-    };
+    // Same canonical key as the streaming path (sorted keys, post-heal names).
     const newCalls = parsed.filter((tc) => {
-      const tcArgsStr = stableArgs(tc.arguments as Record<string, unknown>);
+      const tcKey = toolCallDedupKey(tc.name, tc.arguments);
       return !state.toolCallsOut.some((existing) => {
-        let existingArgs: Record<string, unknown> = {};
+        let existingArgs: unknown = {};
         try {
           existingArgs = JSON.parse(existing.function.arguments);
         } catch {
           /* ignore */
         }
-        return existing.function.name === tc.name && stableArgs(existingArgs) === tcArgsStr;
+        return toolCallDedupKey(existing.function.name, existingArgs) === tcKey;
       });
     });
     if (newCalls.length > 0) {
