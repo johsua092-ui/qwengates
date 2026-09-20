@@ -35,6 +35,8 @@ export interface ConfigSchema {
   CAPSOLVER_API_KEY: string;
   /** DeepSeek Open Platform bearer key (https://platform.deepseek.com). */
   DEEPSEEK_API_KEY: string;
+  /** Z.AI GLM bearer key (https://z.ai). Serves glm-* models. */
+  GLM_API_KEY: string;
   // ── Dashboard login ──────────────────────────────────────────────
   /**
    * Shared dashboard password (login gate). Deliberately EMPTY by default:
@@ -80,6 +82,7 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   CRITICAL_THINKING: 'true',
   CAPSOLVER_API_KEY: '',
   DEEPSEEK_API_KEY: '',
+  GLM_API_KEY: '',
   DASHBOARD_PASSWORD: '',
   DASHBOARD_SESSION_SECRET: '',
   DASHBOARD_SESSION_TTL_MS: '604800000',

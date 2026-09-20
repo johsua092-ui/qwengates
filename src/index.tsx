@@ -17,6 +17,7 @@ import { getAccountCount, getAccountStats, getAccounts, getAvailableCount, initA
 import { closeScreencast, handleInputEvent, startScreencast } from './services/cdpScreencast.ts';
 import { config, updateClaudeCodeSettings } from './services/configService.ts';
 import { listDeepSeekModels } from './services/deepseek.ts';
+import { listGlmModels } from './services/glm.ts';
 import { logStore } from './services/logStore.ts';
 import { configureAccount, fetchQwenModels } from './services/qwen.ts';
 import { getUsage, getUsageSummary, loadUsageStore } from './services/usageTracker.ts';
@@ -319,7 +320,27 @@ app.get(
           }))
         : [];
 
-      return c.json({ object: 'list', data: [...qwenData, ...deepseekData] });
+      // GLM (Z.AI) is advertised the same way: only when a key is present, so
+      // an unconfigured provider is never offered to clients.
+      const glmConfigured = !!config.get('GLM_API_KEY');
+      const glmData = glmConfigured
+        ? listGlmModels().map((m) => ({
+            id: m.id,
+            object: 'model' as const,
+            created: Math.floor(Date.now() / 1000),
+            owned_by: 'zai',
+            permission: [] as any[],
+            root: m.id,
+            parent: null,
+            context_window: 128000,
+            max_output_tokens: 96000,
+            modalities: m.vision ? ['text', 'image'] : ['text'],
+            description: `${m.label}${m.free ? ' (free tier)' : ''} — ${m.description}`,
+            capabilities: {},
+          }))
+        : [];
+
+      return c.json({ object: 'list', data: [...qwenData, ...deepseekData, ...glmData] });
     } catch (err: any) {
       return c.json({ error: { message: err.message } }, 500);
     }

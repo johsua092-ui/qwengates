@@ -21,7 +21,9 @@ import {
   handleImageModelFallback,
 } from './chatHelpers.ts';
 import { isDeepSeekModel } from '../services/deepseek.ts';
+import { isGlmModel } from '../services/glm.ts';
 import { handleDeepSeekRequest } from './deepseekRoutes.ts';
+import { handleGlmRequest } from './glmRoutes.ts';
 import { handleNonStreamingRequest } from './chatNonStreaming.ts';
 import type { UsageTotals } from './chatStreaming.ts';
 import { handleStreamingRequest } from './chatStreaming.ts';
@@ -463,6 +465,19 @@ export async function chatCompletions(c: Context) {
     // Qwen machinery (Playwright, session pool, token refresh) is touched.
     if (isDeepSeekModel(body.model)) {
       return handleDeepSeekRequest({
+        c,
+        logId,
+        body,
+        messages,
+        isStream,
+      });
+    }
+
+    // GLM (Z.AI) is the same kind of provider: bearer key, OpenAI-compatible
+    // endpoint, no browser. The `glm-` prefix cannot collide with any other
+    // provider's namespace, so routing stays unambiguous.
+    if (isGlmModel(body.model)) {
+      return handleGlmRequest({
         c,
         logId,
         body,

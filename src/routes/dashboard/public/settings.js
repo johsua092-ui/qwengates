@@ -46,8 +46,11 @@ var SETTINGS_SECTIONS = [
   },
   {
     title: 'Providers',
-    desc: 'DeepSeek runs through its official API using a bearer key — no browser or account login needed. Leave empty to disable. Requests pick a provider by model name (deepseek-flash, deepseek-v4-pro).',
-    fields: [{ key: 'DEEPSEEK_API_KEY', label: 'DEEPSEEK_API_KEY', type: 'password' }],
+    desc: 'DeepSeek and GLM run through their official APIs using bearer keys — no browser or account login needed. Leave a key empty to disable that provider. Requests pick a provider by model name: deepseek-flash, deepseek-v4-pro, glm-4.7-flash, glm-4.5-flash, glm-4.6v-flash, glm-4.7, glm-5.3.',
+    fields: [
+      { key: 'DEEPSEEK_API_KEY', label: 'DEEPSEEK_API_KEY', type: 'password' },
+      { key: 'GLM_API_KEY', label: 'GLM_API_KEY', type: 'password' },
+    ],
   },
   {
     title: 'Rate Limiting',
