@@ -16,6 +16,7 @@ import { apiKeyStoreCount, authenticateApiKey, extractBearerToken } from './serv
 import { getAccountCount, getAccountStats, getAccounts, getAvailableCount, initAuth, setStartupStatus } from './services/auth.ts';
 import { closeScreencast, handleInputEvent, startScreencast } from './services/cdpScreencast.ts';
 import { config, updateClaudeCodeSettings } from './services/configService.ts';
+import { listDeepSeekModels } from './services/deepseek.ts';
 import { logStore } from './services/logStore.ts';
 import { configureAccount, fetchQwenModels } from './services/qwen.ts';
 import { getUsage, getUsageSummary, loadUsageStore } from './services/usageTracker.ts';
@@ -281,7 +282,7 @@ app.get(
     try {
       const models = await fetchQwenModels();
       // OpenAI-compatible model object: standard fields + our extensions
-      const data = models.map((m: any) => ({
+      const qwenData = models.map((m: any) => ({
         id: m.id,
         object: 'model' as const,
         created: m.created || Math.floor(Date.now() / 1000),
@@ -296,7 +297,29 @@ app.get(
         description: m.description || '',
         capabilities: m.capabilities || {},
       }));
-      return c.json({ object: 'list', data });
+
+      // DeepSeek models are advertised alongside Qwen so a client can pick a
+      // provider purely by model name. Only listed when configured, so we never
+      // advertise a provider that would fail on every call.
+      const deepseekConfigured = !!config.get('DEEPSEEK_API_KEY');
+      const deepseekData = deepseekConfigured
+        ? listDeepSeekModels().map((m) => ({
+            id: m.id,
+            object: 'model' as const,
+            created: Math.floor(Date.now() / 1000),
+            owned_by: 'deepseek',
+            permission: [] as any[],
+            root: m.id,
+            parent: null,
+            context_window: 1000000,
+            max_output_tokens: 384000,
+            modalities: m.vision ? ['text', 'image'] : ['text'],
+            description: `${m.label} — ${m.description}`,
+            capabilities: {},
+          }))
+        : [];
+
+      return c.json({ object: 'list', data: [...qwenData, ...deepseekData] });
     } catch (err: any) {
       return c.json({ error: { message: err.message } }, 500);
     }

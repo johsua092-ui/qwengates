@@ -45,6 +45,11 @@ var SETTINGS_SECTIONS = [
     ],
   },
   {
+    title: 'Providers',
+    desc: 'DeepSeek runs through its official API using a bearer key — no browser or account login needed. Leave empty to disable. Requests pick a provider by model name (deepseek-flash, deepseek-v4-pro).',
+    fields: [{ key: 'DEEPSEEK_API_KEY', label: 'DEEPSEEK_API_KEY', type: 'password' }],
+  },
+  {
     title: 'Rate Limiting',
     desc: 'Cooldowns and throttling to prevent account bans.',
     fields: [{ key: 'RATE_LIMIT_COOLDOWN_MS', label: 'RATE_LIMIT_COOLDOWN_MS', type: 'number' }],

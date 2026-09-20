@@ -20,6 +20,8 @@ import {
   getModelSpecs,
   handleImageModelFallback,
 } from './chatHelpers.ts';
+import { isDeepSeekModel } from '../services/deepseek.ts';
+import { handleDeepSeekRequest } from './deepseekRoutes.ts';
 import { handleNonStreamingRequest } from './chatNonStreaming.ts';
 import type { UsageTotals } from './chatStreaming.ts';
 import { handleStreamingRequest } from './chatStreaming.ts';
@@ -455,6 +457,19 @@ export async function chatCompletions(c: Context) {
     });
     const logEntry = logStore.getEntry(logId);
     if (logEntry) populateLogEntry(logEntry, body, messages);
+
+    // ── Provider routing ─────────────────────────────────────────────
+    // DeepSeek is a plain API-key provider, so it short-circuits before any
+    // Qwen machinery (Playwright, session pool, token refresh) is touched.
+    if (isDeepSeekModel(body.model)) {
+      return handleDeepSeekRequest({
+        c,
+        logId,
+        body,
+        messages,
+        isStream,
+      });
+    }
 
     if (!contextCheck.ok) {
       logStore.updateEntry(logId, (entry) => {

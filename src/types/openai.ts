@@ -87,6 +87,22 @@ export interface OpenAIRequest {
   stream_options?: {
     include_usage?: boolean;
   };
+  // Standard OpenAI sampling/format knobs, passed through to the upstream
+  // provider. Previously absent, which caused validation to drop them.
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  stop?: string | string[];
+  presence_penalty?: number;
+  frequency_penalty?: number;
+  seed?: number;
+  response_format?: Record<string, unknown>;
+  user?: string;
+  n?: number;
+  logprobs?: boolean;
+  top_logprobs?: number;
+  parallel_tool_calls?: boolean;
 }
 
 export interface ParsedToolCall {

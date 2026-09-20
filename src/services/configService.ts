@@ -33,6 +33,8 @@ export interface ConfigSchema {
   CLAUDE_CODE_PROXY: string;
   CRITICAL_THINKING: string;
   CAPSOLVER_API_KEY: string;
+  /** DeepSeek Open Platform bearer key (https://platform.deepseek.com). */
+  DEEPSEEK_API_KEY: string;
   // ── Dashboard login ──────────────────────────────────────────────
   /**
    * Shared dashboard password (login gate). Deliberately EMPTY by default:
@@ -77,6 +79,7 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   CLAUDE_CODE_PROXY: 'false',
   CRITICAL_THINKING: 'true',
   CAPSOLVER_API_KEY: '',
+  DEEPSEEK_API_KEY: '',
   DASHBOARD_PASSWORD: '',
   DASHBOARD_SESSION_SECRET: '',
   DASHBOARD_SESSION_TTL_MS: '604800000',

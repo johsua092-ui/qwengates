@@ -67,6 +67,25 @@ export const openAIRequestSchema = z.object({
       include_usage: z.boolean().optional(),
     })
     .optional(),
+  // Standard OpenAI sampling/format knobs. These used to be silently dropped by
+  // validation, so a client sending `temperature` got the upstream default
+  // instead — a quiet behaviour change, not an error. Pass them through.
+  temperature: z.number().min(0).max(2).optional(),
+  top_p: z.number().min(0).max(1).optional(),
+  max_tokens: z.number().int().positive().optional(),
+  max_completion_tokens: z.number().int().positive().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  presence_penalty: z.number().optional(),
+  frequency_penalty: z.number().optional(),
+  seed: z.number().int().optional(),
+  response_format: z
+    .union([z.object({ type: z.string() }).passthrough(), z.record(z.string(), z.unknown())])
+    .optional(),
+  user: z.string().optional(),
+  n: z.number().int().positive().optional(),
+  logprobs: z.boolean().optional(),
+  top_logprobs: z.number().int().optional(),
+  parallel_tool_calls: z.boolean().optional(),
 });
 
 export type ValidatedOpenAIRequest = z.infer<typeof openAIRequestSchema>;
