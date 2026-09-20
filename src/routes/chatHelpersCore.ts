@@ -317,7 +317,8 @@ export interface ToolCallProcessingOptions {
   logId: string;
   toolSpamGuard: ToolSpamGuard;
   correctionPrompts: string[];
-  maxToolCalls: number;
+  /** Max tool calls to keep per response. `null`/`0` means unlimited. */
+  maxToolCalls: number | null;
 }
 
 export function processToolCallsThroughGuard(toolCalls: any[], toolCallsOut: any[], options: ToolCallProcessingOptions): void {

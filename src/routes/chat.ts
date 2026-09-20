@@ -202,7 +202,13 @@ async function setupSession(messages: any[], body: OpenAIRequest, availableToken
       const combinedContent = parts.join('\n\n');
       try {
         const file = await uploadLargeTextAsFile(accountEmail, combinedContent, 'context.txt');
-        processedMessages[0] = { ...processedMessages[0], files: [file] };
+        // APPEND, never overwrite: images are attached further below and any
+        // pre-existing attachments on this message must survive too. Assigning
+        // `files: [file]` here silently discarded them.
+        processedMessages[0] = {
+          ...processedMessages[0],
+          files: [...(processedMessages[0].files || []), file],
+        };
       } catch (err: any) {
         // NEVER fall back to sending the payload inline: Qwen bot-detects
         // oversized user messages and the request hangs/spins. Retry on the
@@ -215,11 +221,13 @@ async function setupSession(messages: any[], body: OpenAIRequest, availableToken
       }
     }
 
-    // Attach uploaded images to the first message
+    // Attach uploaded images to the first message.
+    // Images go FIRST so `files[0]` is always the attachment the user just
+    // provided; the context file (system/history boilerplate) follows it.
     if (imageFiles.length > 0) {
       processedMessages[0] = {
         ...processedMessages[0],
-        files: [...(processedMessages[0].files || []), ...imageFiles],
+        files: [...imageFiles, ...(processedMessages[0].files || [])],
       };
     }
 

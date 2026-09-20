@@ -1,7 +1,12 @@
 import assert from 'node:assert';
 import test from 'node:test';
 import { logStore } from '../services/logStore.ts';
-import { processStreamData, type StreamProcessingCtx, type StreamProcessingState } from './chatStreamingHelpers.ts';
+import {
+  processStreamData,
+  ToolCallMultiset,
+  type StreamProcessingCtx,
+  type StreamProcessingState,
+} from './chatStreamingHelpers.ts';
 
 test('reproduces and tests fix for corrupted tool call when split across chunks', async () => {
   const logId = 'test-corrupted-tool-call-log-id';
@@ -21,7 +26,7 @@ test('reproduces and tests fix for corrupted tool call when split across chunks'
     lastVStrRaw: '',
     lastFilteredFullContent: '',
     lastDeltaThinkingFull: '',
-    loggedToolCalls: new Set(),
+    loggedToolCalls: new ToolCallMultiset(),
     lastParsePosition: 0,
     toolCallDepth: 0,
     pendingChunk: '',
@@ -165,7 +170,7 @@ test('one-chunk buffer: delays chunks with < but no > and combines with next chu
     lastVStrRaw: '',
     lastFilteredFullContent: '',
     lastDeltaThinkingFull: '',
-    loggedToolCalls: new Set(),
+    loggedToolCalls: new ToolCallMultiset(),
     lastParsePosition: 0,
     toolCallDepth: 0,
     pendingChunk: '',
@@ -248,7 +253,7 @@ test('one-chunk buffer: releases non-tool-call < content normally', async () => 
     lastVStrRaw: '',
     lastFilteredFullContent: '',
     lastDeltaThinkingFull: '',
-    loggedToolCalls: new Set(),
+    loggedToolCalls: new ToolCallMultiset(),
     lastParsePosition: 0,
     toolCallDepth: 0,
     pendingChunk: '',
@@ -346,7 +351,7 @@ test('one-chunk buffer: force-releases when MAX_BUFFER_CHARS exceeded', async ()
     lastVStrRaw: '',
     lastFilteredFullContent: '',
     lastDeltaThinkingFull: '',
-    loggedToolCalls: new Set(),
+    loggedToolCalls: new ToolCallMultiset(),
     lastParsePosition: 0,
     toolCallDepth: 0,
     pendingChunk: '',

@@ -74,29 +74,153 @@ export function extractLocalMcpToolCalls(sseData: any): ParsedToolCall[] {
 // ── Per-chunk stream processing ────────────────────────────────────
 
 /**
- * Canonical dedup key for a tool call: name + stable-serialized arguments.
+ * Deterministic serialization: object keys are sorted RECURSIVELY, so nested
+ * argument objects hash the same regardless of property order.
  *
  * Used to suppress the SAME logical call arriving twice — Qwen reports a call
- * both as a `local_mcp` SSE event and as an XML block, and the two paths may
- * serialize argument keys in different orders. Sorting keys makes the key
- * order-independent so the duplicate is actually caught.
+ * both as a `local_mcp` SSE event and as an XML block, and the two paths build
+ * their arguments independently. A shallow sort was not enough: an argument
+ * like `{ options: { recursive: true, force: false } }` could arrive with the
+ * inner keys swapped, producing a different key and letting the same call
+ * through twice.
  *
  * IMPORTANT: this is only for matching a call against ITSELF across the two
  * transports. It must never be used to collapse two genuinely distinct calls
  * the model made in the same turn.
  */
-export function toolCallDedupKey(name: string, args: unknown): string {
-  let serialized: string;
-  if (args === null || typeof args !== 'object') {
-    serialized = JSON.stringify(args);
-  } else {
-    const obj = args as Record<string, unknown>;
-    serialized = `{${Object.keys(obj)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`)
-      .join(',')}}`;
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
   }
-  return `${name}:${serialized}`;
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const body = Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`)
+    .join(',');
+  return `{${body}}`;
+}
+
+/** Identity of a tool call for dedup purposes: final name + canonical args. */
+export function toolCallDedupKey(name: string, args: unknown): string {
+  return `${name}:${canonicalize(args)}`;
+}
+
+/**
+ * Multiset counter for emitted/seen tool calls.
+ *
+ * A plain Set is wrong here: because `lastFullContent` grows and is re-parsed
+ * on every chunk, a Set would permanently swallow the second of two IDENTICAL
+ * calls the model legitimately issued in one turn (it can never "unsee" it).
+ *
+ * Counting instead lets each occurrence be matched once, so N identical calls
+ * survive while a genuine re-report of the SAME occurrence is still dropped.
+ */
+export class ToolCallMultiset {
+  private counts = new Map<string, number>();
+
+  /** Total number of entries recorded. */
+  get size(): number {
+    let total = 0;
+    for (const n of this.counts.values()) total += n;
+    return total;
+  }
+
+  /** Record one occurrence of a call. */
+  add(key: string): void {
+    this.counts.set(key, (this.counts.get(key) ?? 0) + 1);
+  }
+
+  /** How many occurrences of `key` have been recorded. */
+  count(key: string): number {
+    return this.counts.get(key) ?? 0;
+  }
+
+  clear(): void {
+    this.counts.clear();
+  }
+}
+
+/**
+ * Given a freshly-parsed batch of tool calls, return only the occurrences that
+ * have NOT already been claimed, and record them as claimed.
+ *
+ * The batch may legitimately contain the SAME call several times (the model can
+ * run an identical command twice on purpose) — every one of those must pass.
+ * What must NOT pass is the SAME occurrence being reported again (the XML path
+ * re-parses the whole growing buffer on every chunk, so it re-sees old calls).
+ *
+ * Counting per-batch solves both: `key` appearing 2x in one batch claims 2
+ * occurrences, while an already-claimed occurrence is not re-issued.
+ */
+export function claimNewOccurrences<T extends { name: string; arguments: unknown }>(
+  batch: T[],
+  claimed: ToolCallMultiset,
+): T[] {
+  // How many times each key appears in THIS batch.
+  const inBatch = new Map<string, number>();
+  for (const tc of batch) {
+    const key = toolCallDedupKey(tc.name, tc.arguments);
+    inBatch.set(key, (inBatch.get(key) ?? 0) + 1);
+  }
+
+  const allowed = new Map<string, number>();
+  for (const [key, total] of inBatch) {
+    const alreadyClaimed = claimed.count(key);
+    // Every occurrence in this batch is new when the batch reports more than we
+    // have claimed so far.
+    allowed.set(key, Math.max(0, total - alreadyClaimed));
+  }
+
+  const result: T[] = [];
+  for (const tc of batch) {
+    const key = toolCallDedupKey(tc.name, tc.arguments);
+    const remaining = allowed.get(key) ?? 0;
+    if (remaining <= 0) continue;
+    allowed.set(key, remaining - 1);
+    claimed.add(key);
+    result.push(tc);
+  }
+  return result;
+}
+
+/**
+ * Merge tool calls reported over two transports (XML text and `local_mcp` SSE).
+ *
+ * Qwen commonly reports the SAME logical call both ways, and that duplicate
+ * must be collapsed — otherwise the client executes the call twice ("tool
+ * error" on the second run).
+ *
+ * But a Set of keys is not good enough: the model may also legitimately issue
+ * TWO identical calls in one turn, and a Set would silently swallow the second
+ * one. This is a MULTISET merge — every XML entry is kept, and a local_mcp
+ * entry is only absorbed while an unmatched XML entry of the same key remains.
+ * Extra local_mcp entries beyond that count are real, separate calls and are
+ * kept.
+ */
+export function mergeToolCallSources<A extends { name: string; arguments: unknown }, B extends { name: string }>(
+  xmlCalls: A[],
+  localMcpCalls: B[],
+): (A | B)[] {
+  const unmatchedFromXml = new Map<string, number>();
+  for (const e of xmlCalls) {
+    const key = toolCallDedupKey(e.name, e.arguments);
+    unmatchedFromXml.set(key, (unmatchedFromXml.get(key) ?? 0) + 1);
+  }
+
+  const merged: (A | B)[] = [...xmlCalls];
+  for (const ltc of localMcpCalls) {
+    const key = toolCallDedupKey(ltc.name, (ltc as { arguments?: unknown }).arguments);
+    const available = unmatchedFromXml.get(key) ?? 0;
+    if (available > 0) {
+      unmatchedFromXml.set(key, available - 1);
+      continue;
+    }
+    merged.push(ltc);
+  }
+  return merged;
 }
 
 export interface StreamProcessingState {
@@ -113,7 +237,7 @@ export interface StreamProcessingState {
   lastVStrRaw: string;
   lastFilteredFullContent: string;
   lastDeltaThinkingFull: string;
-  loggedToolCalls: Set<string>;
+  loggedToolCalls: ToolCallMultiset;
   lastParsePosition: number;
   /** Set when upstream Qwen aborts the stream with an error (content filter,
    *  rate limit, etc.). The post-stream handler flushes partial content first,
@@ -226,12 +350,9 @@ export async function processStreamData(data: any, state: StreamProcessingState,
     if (deltaPhase === 'local_tool') {
       const rawLocalToolCalls = extractLocalMcpToolCalls(data);
       const localToolCalls = rawLocalToolCalls.map((tc) => healToolCall(tc, ctx.bodyTools));
-      const newToolCalls = localToolCalls.filter((tc) => {
-        const key = toolCallDedupKey(tc.name, tc.arguments);
-        if (state.loggedToolCalls.has(key)) return false;
-        state.loggedToolCalls.add(key);
-        return true;
-      });
+      // Claim one occurrence per key, allowing N identical calls to pass while
+      // still dropping a genuine re-report of the same occurrence.
+      const newToolCalls = claimNewOccurrences(localToolCalls, state.loggedToolCalls);
 
       if (newToolCalls.length > 0) {
         logStore.updateEntry(logId, (entry) => {
@@ -368,12 +489,7 @@ export async function processStreamData(data: any, state: StreamProcessingState,
     // `<function=bash>` (XML), which heal to the same client tool — keying on
     // the pre-heal form lets both through and the client sees it twice.
     const healedCalls = xmlToolCalls.map((tc) => healToolCall(xmlToolCallToParsed(tc, 0), ctx.bodyTools));
-    const newToolCalls = healedCalls.filter((tc) => {
-      const key = toolCallDedupKey(tc.name, tc.arguments);
-      if (state.loggedToolCalls.has(key)) return false;
-      state.loggedToolCalls.add(key);
-      return true;
-    });
+    const newToolCalls = claimNewOccurrences(healedCalls, state.loggedToolCalls);
 
     if (newToolCalls.length > 0) {
       logStore.updateEntry(logId, (entry) => {

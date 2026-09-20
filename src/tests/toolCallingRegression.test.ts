@@ -17,7 +17,13 @@
 import { describe, expect, test } from 'bun:test';
 import { parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
-import { toolCallDedupKey } from '../routes/chatStreamingHelpers.ts';
+import {
+  claimNewOccurrences,
+  mergeToolCallSources,
+  ToolCallMultiset,
+  toolCallDedupKey,
+} from '../routes/chatStreamingHelpers.ts';
+import { parseToolCallLimit } from '../tools/toolCallLimit.ts';
 
 const BASH = '<function=bash>\n<parameter=command>ls</parameter>\n</function>';
 const BASH_OTHER = '<function=bash>\n<parameter=command>pwd</parameter>\n</function>';
@@ -140,5 +146,180 @@ describe('tool-calling regressions', () => {
     const healed = healToolCall({ id: 'c3', name: 'execute_code', arguments: { code: 'print(1)' } }, bashClient);
     expect(healed.name).toBe('bash');
     expect((healed.arguments as any).command).toBe('print(1)');
+  });
+});
+
+describe('attachment handling', () => {
+  test('BUG 7: context file must not overwrite existing attachments', () => {
+    // `files: [file]` replaced the array outright, so an image (or any already
+    // attached file) silently vanished — including on the Anthropic route.
+    // Merge semantics: context file appends, images prepend.
+    const existing = [{ type: 'image', file_class: 'vision' }];
+    const contextFile = { type: 'file', file_class: 'document' };
+
+    const afterContext = { files: [...existing, contextFile] };
+    const afterImages = { files: [...existing, ...(afterContext.files || [])] };
+
+    // The pre-existing attachment survives in both steps.
+    expect(afterContext.files).toContain(existing[0]);
+    expect(afterContext.files).toContain(contextFile);
+    expect(afterContext.files.length).toBe(2);
+
+    // Images end up first: files[0] is what the user just provided.
+    expect(afterImages.files[0]).toEqual(existing[0]);
+  });
+
+  test('BUG 7: overwriting (the old behaviour) is what dropped attachments', () => {
+    const existing = [{ type: 'image' }];
+    const oldBehaviour = { ...{}, files: [{ type: 'file' }] };
+    expect(oldBehaviour.files).not.toContain(existing[0]);
+    expect(oldBehaviour.files.length).toBe(1);
+  });
+});
+
+describe('deep argument canonicalization (dedup)', () => {
+  test('BUG 9: nested object key order must not defeat dedup', () => {
+    // Shallow sorting was not enough: the same call arriving over the two
+    // transports with inner keys swapped produced different keys, so the
+    // duplicate slipped through and the client executed it twice.
+    expect(toolCallDedupKey('Bash', { options: { recursive: true, force: false } })).toBe(
+      toolCallDedupKey('Bash', { options: { force: false, recursive: true } }),
+    );
+  });
+
+  test('BUG 9: arrays-of-objects are canonicalized too', () => {
+    expect(toolCallDedupKey('Edit', { edits: [{ old: 'a', new: 'b' }] })).toBe(
+      toolCallDedupKey('Edit', { edits: [{ new: 'b', old: 'a' }] }),
+    );
+  });
+
+  test('BUG 9: canonicalization does not merge genuinely different calls', () => {
+    expect(toolCallDedupKey('Bash', { command: 'ls' })).not.toBe(toolCallDedupKey('Bash', { command: 'pwd' }));
+    expect(toolCallDedupKey('Bash', { nested: { a: 1 } })).not.toBe(toolCallDedupKey('Bash', { nested: { a: 2 } }));
+    expect(toolCallDedupKey('Read', { p: 1 })).not.toBe(toolCallDedupKey('Write', { p: 1 }));
+  });
+
+  test('BUG 9: primitives, null and arrays serialize deterministically', () => {
+    expect(toolCallDedupKey('T', null)).toBe('T:null');
+    expect(toolCallDedupKey('T', 5)).toBe('T:5');
+    expect(toolCallDedupKey('T', 'x')).toBe('T:"x"');
+    expect(toolCallDedupKey('T', [1, 2])).toBe('T:[1,2]');
+  });
+});
+
+describe('cross-transport tool call merge (multiset)', () => {
+  const call = (name: string, args: unknown) => ({ name, arguments: args });
+
+  test('collapses the same call reported over BOTH transports', () => {
+    const xml = [call('Bash', { command: 'ls' })];
+    const local = [{ ...call('Bash', { command: 'ls' }), id: 'call_abc' }];
+    expect(mergeToolCallSources(xml, local)).toHaveLength(1);
+  });
+
+  test('ignores id differences (ids are synthesized per source)', () => {
+    const xml = [{ ...call('Bash', { command: 'ls' }), id: 'call_xml' }];
+    const local = [{ ...call('Bash', { command: 'ls' }), id: 'call_local' }];
+    expect(mergeToolCallSources(xml, local)).toHaveLength(1);
+  });
+
+  test('nested argument key order does not defeat the merge', () => {
+    const xml = [call('Edit', { opts: { a: 1, b: 2 } })];
+    const local = [call('Edit', { opts: { b: 2, a: 1 } })];
+    expect(mergeToolCallSources(xml, local)).toHaveLength(1);
+  });
+
+  test('keeps TWO genuinely repeated calls (must not be deduped)', () => {
+    const xml = [call('Bash', { command: 'ls' }), call('Bash', { command: 'ls' })];
+    expect(mergeToolCallSources(xml, [])).toHaveLength(2);
+  });
+
+  test('keeps an extra real call beyond the cross-transport duplicate', () => {
+    // XML has the call twice (two real invocations); local_mcp reports it once.
+    // Result must be 2, not 1: the duplicate is absorbed, the second real call
+    // survives.
+    const xml = [call('Bash', { command: 'ls' }), call('Bash', { command: 'ls' })];
+    const local = [call('Bash', { command: 'ls' })];
+    expect(mergeToolCallSources(xml, local)).toHaveLength(2);
+  });
+
+  test('keeps local_mcp-only calls that never appeared in XML', () => {
+    const xml = [call('Read', { file: 'a' })];
+    const local = [call('Bash', { command: 'ls' })];
+    const merged = mergeToolCallSources(xml, local);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((c) => c.name).sort()).toEqual(['Bash', 'Read']);
+  });
+
+  test('does not merge different arguments', () => {
+    const xml = [call('Bash', { command: 'ls' })];
+    const local = [call('Bash', { command: 'pwd' })];
+    expect(mergeToolCallSources(xml, local)).toHaveLength(2);
+  });
+});
+
+describe('occurrence claiming (repeated identical calls)', () => {
+  const call = (name: string, args: unknown) => ({ name, arguments: args });
+
+  test('first batch claims everything', () => {
+    const m = new ToolCallMultiset();
+    const out = claimNewOccurrences([call('Bash', { command: 'ls' })], m);
+    expect(out).toHaveLength(1);
+  });
+
+  test('re-reporting the SAME occurrence does not emit it again', () => {
+    // The XML path re-parses the growing buffer every chunk: it keeps seeing
+    // the same call. Only the first sighting may be emitted.
+    const m = new ToolCallMultiset();
+    claimNewOccurrences([call('Bash', { command: 'ls' })], m);
+    const second = claimNewOccurrences([call('Bash', { command: 'ls' })], m);
+    expect(second).toHaveLength(0);
+  });
+
+  test('a genuinely repeated call survives the second time it appears', () => {
+    // Buffer now contains the call TWICE — that is a real second invocation.
+    const m = new ToolCallMultiset();
+    claimNewOccurrences([call('Bash', { command: 'ls' })], m);
+    const second = claimNewOccurrences([call('Bash', { command: 'ls' }), call('Bash', { command: 'ls' })], m);
+    expect(second).toHaveLength(1);
+  });
+
+  test('two identical calls in the very first batch both pass', () => {
+    const m = new ToolCallMultiset();
+    const out = claimNewOccurrences([call('Bash', { command: 'ls' }), call('Bash', { command: 'ls' })], m);
+    expect(out).toHaveLength(2);
+  });
+
+  test('N identical calls are emitted one by one as the buffer grows', () => {
+    const m = new ToolCallMultiset();
+    const seen: number[] = [];
+    const one = call('Bash', { command: 'ls' });
+    seen.push(claimNewOccurrences([one], m).length); // 1 call in buffer
+    seen.push(claimNewOccurrences([one, one], m).length); // 2 calls in buffer
+    seen.push(claimNewOccurrences([one, one, one], m).length); // 3 calls in buffer
+    expect(seen).toEqual([1, 1, 1]);
+    expect(m.count(toolCallDedupKey('Bash', { command: 'ls' }))).toBe(3);
+  });
+
+  test('distinct calls are unaffected by each other', () => {
+    const m = new ToolCallMultiset();
+    claimNewOccurrences([call('Bash', { command: 'ls' })], m);
+    const out = claimNewOccurrences([call('Bash', { command: 'pwd' }), call('Read', { file: 'a' })], m);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe('tool call limit parsing', () => {
+  test('BUG 8: malformed values never silently change the limit', () => {
+    // parseInt('2.5') === 2 and (limit > 0) === false for -1, so the old
+    // config.getInt path reinterpreted typos instead of falling back.
+    expect(parseToolCallLimit('2.5', 3)).toBe(3);
+    expect(parseToolCallLimit('-1', 3)).toBe(3);
+    expect(parseToolCallLimit('', 3)).toBe(3);
+    expect(parseToolCallLimit('nonsense', 3)).toBe(3);
+
+    // Valid values and the documented off-switch still work.
+    expect(parseToolCallLimit('5', 3)).toBe(5);
+    expect(parseToolCallLimit('0', 3)).toBeNull();
+    expect(parseToolCallLimit('unlimited', 3)).toBeNull();
   });
 });

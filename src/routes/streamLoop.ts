@@ -4,6 +4,7 @@ import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from 
 import { healToolCall } from '../tools/toolHealer.ts';
 import { type AmplificationGuardState, checkAmplificationGuard, getSnapshotDelta, parseQwenErrorPayload } from './chatHelpers.ts';
 import {
+  claimNewOccurrences,
   filterContentPipeline,
   processStreamData,
   toolCallDedupKey,
@@ -170,16 +171,15 @@ export async function handlePostStreamCompletion(
     // calls, which is NOT true in practice: local_mcp and XML report the same
     // calls in different orders, so a count-based slice can skip a genuinely
     // new call and re-emit one the client already has.
+    //
+    // `parsed` is the complete list from the final content, so anything in it
+    // beyond what has already been claimed is genuinely un-emitted. Repeated
+    // identical calls are preserved: `claimNewOccurrences` claims per
+    // occurrence, not per unique key.
     if (streamState.lastFullContent && effectiveToolCallCount > emittedToolCallCount) {
       const parsed = parseXmlToolCalls(streamState.lastFullContent).toolCalls;
-      const unEmitted = parsed
-        .map((tc) => healToolCall(xmlToolCallToParsed(tc, emittedToolCallCount), bodyTools))
-        .filter((healed) => {
-          const key = toolCallDedupKey(healed.name, healed.arguments);
-          if (streamState.loggedToolCalls.has(key)) return false;
-          streamState.loggedToolCalls.add(key);
-          return true;
-        });
+      const healed = parsed.map((tc) => healToolCall(xmlToolCallToParsed(tc, emittedToolCallCount), bodyTools));
+      const unEmitted = claimNewOccurrences(healed, streamState.loggedToolCalls);
       for (const [i, healed] of unEmitted.entries()) {
         logStore.updateEntry(logId, (entry) => {
           entry.parsedToolCalls.push({ name: healed.name, args: JSON.stringify(healed.arguments) });

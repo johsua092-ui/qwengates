@@ -17,6 +17,7 @@ import { config } from '../services/configService.ts';
 
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
+import { parseToolCallLimit } from '../tools/toolCallLimit.ts';
 import { extractLocalMcpToolCalls, toolCallDedupKey } from './chatStreamingHelpers.ts';
 
 export interface NonStreamingContext {
@@ -136,7 +137,7 @@ function processAnswerDelta(delta: any, state: StreamProcessorState, ctx: NonStr
         logId: ctx.logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
+        maxToolCalls: parseToolCallLimit(config.get('MAX_TOOL_CALLS_PER_RESPONSE'), 0),
         logParsed: true,
       });
     }
@@ -212,7 +213,7 @@ function parseQwenResponse(line: string, state: StreamProcessorState, ctx: NonSt
         logId: ctx.logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
+        maxToolCalls: parseToolCallLimit(config.get('MAX_TOOL_CALLS_PER_RESPONSE'), 0),
         logParsed: true,
       });
     }
@@ -242,7 +243,7 @@ function flushAndDetectLoops(state: StreamProcessorState, logId: string, clientT
         logId,
         toolSpamGuard: state.toolSpamGuard,
         correctionPrompts: state.correctionPrompts,
-        maxToolCalls: config.getInt('MAX_TOOL_CALLS_PER_RESPONSE', 0),
+        maxToolCalls: parseToolCallLimit(config.get('MAX_TOOL_CALLS_PER_RESPONSE'), 0),
         label: 'xml-flush',
         logParsed: true,
       });

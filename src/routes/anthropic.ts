@@ -10,6 +10,7 @@ import type { QwenFileAttachment } from '../services/qwenFileUpload.ts';
 import { uploadImageAsFile, uploadLargeTextAsFile } from '../services/qwenFileUpload.ts';
 import { sessionPool } from '../services/sessionPool.ts';
 import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
+import { healToolCall } from '../tools/toolHealer.ts';
 import type { OpenAIRequest, ParsedToolCall } from '../types/openai.ts';
 import { checkContextWindow, estimateTokens } from '../utils/tokenEstimator.ts';
 import {
@@ -22,7 +23,7 @@ import {
 } from './chatHelpers.ts';
 import type { NonStreamingContext } from './chatNonStreaming.ts';
 import { handleNonStreamingRequest } from './chatNonStreaming.ts';
-import { extractLocalMcpToolCalls } from './chatStreamingHelpers.ts';
+import { extractLocalMcpToolCalls, mergeToolCallSources, toolCallDedupKey } from './chatStreamingHelpers.ts';
 
 // ── Anthropic → Qwen model map ─────────────────────────────────────
 
@@ -394,7 +395,13 @@ async function setupAnthropicSession(
       if (chatHistoryContent) parts.push(`<chat_history>\n${chatHistoryContent}\n</chat_history>`);
       try {
         const file = await uploadLargeTextAsFile(accountEmail, parts.join('\n\n'), 'context.txt');
-        processedMessages[0] = { ...processedMessages[0], files: [file] };
+        // APPEND, never overwrite: image attachments are added just below and
+        // any pre-existing ones must survive. `files: [file]` silently dropped
+        // them (same defect as the OpenAI route).
+        processedMessages[0] = {
+          ...processedMessages[0],
+          files: [...(processedMessages[0].files || []), file],
+        };
       } catch (err: any) {
         // NEVER fall back to sending the payload inline: Qwen bot-detects
         // oversized user messages and the request hangs/spins. Retry on the
@@ -407,10 +414,12 @@ async function setupAnthropicSession(
       }
     }
 
+    // Images go FIRST so `files[0]` is always the attachment the user just
+    // provided; the context file (system/history boilerplate) follows it.
     if (imageFiles.length > 0) {
       processedMessages[0] = {
         ...processedMessages[0],
-        files: [...(processedMessages[0].files || []), ...imageFiles],
+        files: [...imageFiles, ...(processedMessages[0].files || [])],
       };
     }
 
@@ -570,6 +579,7 @@ async function handleAnthropicStream(
   nextParentId: string | null,
   sessionHeaders: any,
   promptTokenEstimate: number = 0,
+  clientTools?: unknown,
 ): Promise<Response> {
   c.header('Content-Type', 'text/event-stream');
   c.header('Cache-Control', 'no-cache');
@@ -670,7 +680,13 @@ async function handleAnthropicStream(
             logStore.log('debug', 'chat', `[Anthropic] local_mcp SSE chunk: extracted ${calls.length} tool calls`);
             for (const c of calls) {
               logStore.log('debug', 'chat', `[Anthropic] local_mcp tool: name=${c.name} id=${c.id} args=${JSON.stringify(c.arguments)}`);
-              if (!localToolCallsAccum.some((e) => e.id === c.id)) localToolCallsAccum.push(c);
+              // No dedup here on purpose. Each `local_tool` finished event is a
+              // distinct call from Qwen, and two IDENTICAL calls in one turn are
+              // legitimate (the model may re-run the same command on purpose).
+              // Dropping by name+args would swallow the second one. Cross-source
+              // duplicates (XML vs local_mcp) are handled once, after the stream,
+              // by the canonical-key merge below.
+              localToolCallsAccum.push(c);
             }
           }
 
@@ -799,7 +815,11 @@ async function handleAnthropicStream(
       );
 
       const { toolCalls: xmlToolCalls } = parseXmlToolCalls(lastFullContent);
-      const xmlParsedCalls = xmlToolCalls.map((tc, i) => xmlToolCallToParsed(tc, i));
+      // Heal BEFORE merging: healing can rename a tool (`terminal` -> `Bash`,
+      // `<function=bash>` normalisation). Comparing raw names against healed
+      // ones treats the same call as two different tools and lets the
+      // duplicate through.
+      const xmlParsedCalls = xmlToolCalls.map((tc, i) => healToolCall(xmlToolCallToParsed(tc, i), clientTools));
       logStore.log('debug', 'chat', `[Anthropic] XML parsed from text: ${xmlParsedCalls.length} tool calls`);
       for (const tc of xmlParsedCalls) {
         logStore.log('debug', 'chat', `[Anthropic] XML tool: name=${tc.name} id=${tc.id} args=${JSON.stringify(tc.arguments)}`);
@@ -813,32 +833,11 @@ async function handleAnthropicStream(
       // sources synthesize their own `call_<uuid>` ids, so an id-based check
       // never matches and the client receives every tool call twice (double
       // execution / "tool error" on the second run).
-      const canonicalArgs = (args: unknown): string => {
-        if (args === null || typeof args !== 'object') return JSON.stringify(args);
-        const obj = args as Record<string, unknown>;
-        return `{${Object.keys(obj)
-          .sort()
-          .map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`)
-          .join(',')}}`;
-      };
-      const toolCallKey = (name: string, args: unknown) => `${name}::${canonicalArgs(args)}`;
-
-      const allToolCalls = [...xmlParsedCalls];
-      const seenKeys = new Set(allToolCalls.map((e) => toolCallKey(e.name, e.arguments)));
-      for (const ltc of localToolCallsAccum) {
-        const key = toolCallKey(ltc.name, ltc.arguments);
-        if (seenKeys.has(key)) {
-          logStore.log(
-            'debug',
-            'chat',
-            `[Anthropic] Skipping duplicate local_mcp tool (already in XML): name=${ltc.name} id=${ltc.id}`,
-          );
-          continue;
-        }
-        logStore.log('debug', 'chat', `[Anthropic] Merging local_mcp tool: name=${ltc.name} id=${ltc.id}`);
-        seenKeys.add(key);
-        allToolCalls.push(ltc);
-      }
+      //
+      // The merge is a multiset (see mergeToolCallSources): it collapses the
+      // cross-transport duplicate while preserving two genuinely repeated calls
+      // the model issued in the same turn.
+      const allToolCalls = mergeToolCallSources(xmlParsedCalls, localToolCallsAccum);
       logStore.log(
         'debug',
         'chat',
@@ -1228,6 +1227,7 @@ export async function anthropicMessages(c: Context) {
       nextParentId,
       sessionHeaders,
       promptTokenEstimate,
+      body.tools,
     );
     logStore.log('debug', 'chat', `[Anthropic] Streaming completed latency=${Date.now() - _requestStartTime}ms`);
     cancelWatchdog();

@@ -4,7 +4,7 @@ import { logStore } from '../services/logStore.ts';
 import { sessionPool } from '../services/sessionPool.ts';
 import type { Message, OpenAIRequest } from '../types/openai.ts';
 import { type AmplificationGuardState } from './chatHelpers.ts';
-import { type StreamProcessingCtx, type StreamProcessingState } from './chatStreamingHelpers.ts';
+import { type StreamProcessingCtx, type StreamProcessingState, ToolCallMultiset } from './chatStreamingHelpers.ts';
 import { handlePostStreamCompletion, runStreamLoop } from './streamLoop.ts';
 import { buildChunkEvent, makeChoice, writeEvent } from './writeHelpers.ts';
 
@@ -154,7 +154,7 @@ function buildInitialStreamState(finalPrompt: string, initialParentId: string | 
     promptTokens: Math.ceil(finalPrompt.length / 3.5), currentThoughtIndex: 0,
     reasoningBuffer: '', lastFullContent: '', lastRawContent: '', lastFilteredSnapshot: '',
     lastThinkingSnapshot: '', lastVStrRaw: '', lastFilteredFullContent: '',
-    lastDeltaThinkingFull: '', loggedToolCalls: new Set(), lastParsePosition: 0,
+    lastDeltaThinkingFull: '', loggedToolCalls: new ToolCallMultiset(), lastParsePosition: 0,
     toolCallDepth: 0, pendingChunk: '',
   };
 }
