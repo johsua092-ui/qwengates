@@ -30,6 +30,18 @@ export interface StreamingContext {
     initialParentId: string | null;
     sessionHeaders: any;
   } | null>;
+  /**
+   * Optional billing hook, invoked once per completed stream with the final
+   * token counts. Used to charge the requesting API key. Errors thrown here are
+   * swallowed by the caller so billing never breaks an in-flight response.
+   */
+  onUsage?: (usage: UsageTotals) => void;
+}
+
+/** Minimal token totals handed to the billing hook. */
+export interface UsageTotals {
+  promptTokens: number;
+  completionTokens: number;
 }
 
 function buildPromptString(messages: Message[]): string {
@@ -68,10 +80,16 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
         const reader = streamReader;
         const streamState = buildInitialStreamState(finalPrompt, currentInitialParentId);
         const streamCtx: StreamProcessingCtx = {
-          streamWriter, completionId, model: body.model,
-          enableContentFiltering: cleanOutput, cleanOutput, logId,
-          resolvedEmail: currentResolvedEmail, ampState,
-          qwenAbortController: currentAbort, qwenLogFile: ctx.qwenLogFile,
+          streamWriter,
+          completionId,
+          model: body.model,
+          enableContentFiltering: cleanOutput,
+          cleanOutput,
+          logId,
+          resolvedEmail: currentResolvedEmail,
+          ampState,
+          qwenAbortController: currentAbort,
+          qwenLogFile: ctx.qwenLogFile,
           emittedToolCallCount: 0,
           bodyTools: body.tools,
         };
@@ -79,13 +97,29 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
         const loopResult = await runStreamLoop(c, reader, streamState, streamCtx, ampState, bufferRef);
         if (!loopResult.error) {
           await handlePostStreamCompletion(
-            { streamWriter, completionId, model: body.model, streamState, ampState, logId,
-              resolvedEmail: currentResolvedEmail, emittedToolCallCount: streamCtx.emittedToolCallCount,
-              buffer: loopResult.buffer, enableContentFiltering: cleanOutput,
+            {
+              streamWriter,
+              completionId,
+              model: body.model,
+              streamState,
+              ampState,
+              logId,
+              resolvedEmail: currentResolvedEmail,
+              emittedToolCallCount: streamCtx.emittedToolCallCount,
+              buffer: loopResult.buffer,
+              enableContentFiltering: cleanOutput,
               includeUsage: !!body.stream_options?.include_usage,
-              bodyTools: body.tools },
-            { reader, heartbeatInterval, chatId: currentSession.chatId,
-              sessionHeaders: currentSessionHeaders, email: currentResolvedEmail, sessionPool },
+              bodyTools: body.tools,
+              onUsage: ctx.onUsage,
+            },
+            {
+              reader,
+              heartbeatInterval,
+              chatId: currentSession.chatId,
+              sessionHeaders: currentSessionHeaders,
+              email: currentResolvedEmail,
+              sessionPool,
+            },
           );
           streamReleased = true;
           return;
@@ -93,7 +127,9 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
         const hasContent = streamState.lastFullContent && streamState.lastFullContent.trim().length > 0;
         if (hasContent) break;
         if (attempt < MAX_STREAM_RETRIES - 1 && ctx.retryStream) {
-          try { reader.cancel(); } catch {}
+          try {
+            reader.cancel();
+          } catch {}
           currentAbort?.abort();
           if (currentSession?.chatId) {
             sessionPool.release(currentSession.chatId, currentInitialParentId, currentSessionHeaders, currentResolvedEmail, false);
@@ -120,7 +156,9 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
       logStore.finalizeRequest(logId);
     } finally {
       if (!streamReleased) {
-        try { await streamWriter.write('data: [DONE]\n\n'); } catch {}
+        try {
+          await streamWriter.write('data: [DONE]\n\n');
+        } catch {}
         logStore.updateEntry(logId, (entry) => {
           entry.finalResponse = entry.finalResponse || { finishReason: '', toolCallCount: 0, contentPreview: '' };
           entry.finalResponse.finishReason = entry.finalResponse.finishReason || 'error';
@@ -136,13 +174,19 @@ export async function handleStreamingRequest(ctx: StreamingContext): Promise<Res
 function createHeartbeat(streamWriter: any, completionId: string, model: string): any {
   const hb = setInterval(async () => {
     try {
-      await streamWriter.write(`data: ${JSON.stringify({
-        id: completionId, object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000), model,
-        system_fingerprint: 'fp_qwen_gate',
-        choices: [{ index: 0, delta: {}, logprobs: null }],
-      })}\n\n`);
-    } catch { clearInterval(hb); }
+      await streamWriter.write(
+        `data: ${JSON.stringify({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          system_fingerprint: 'fp_qwen_gate',
+          choices: [{ index: 0, delta: {}, logprobs: null }],
+        })}\n\n`,
+      );
+    } catch {
+      clearInterval(hb);
+    }
   }, 10_000);
   if (hb && typeof hb.unref === 'function') hb.unref();
   return hb;
@@ -150,11 +194,22 @@ function createHeartbeat(streamWriter: any, completionId: string, model: string)
 
 function buildInitialStreamState(finalPrompt: string, initialParentId: string | null): StreamProcessingState {
   return {
-    targetResponseId: null, nextParentId: initialParentId, completionTokens: 0,
-    promptTokens: Math.ceil(finalPrompt.length / 3.5), currentThoughtIndex: 0,
-    reasoningBuffer: '', lastFullContent: '', lastRawContent: '', lastFilteredSnapshot: '',
-    lastThinkingSnapshot: '', lastVStrRaw: '', lastFilteredFullContent: '',
-    lastDeltaThinkingFull: '', loggedToolCalls: new ToolCallMultiset(), lastParsePosition: 0,
-    toolCallDepth: 0, pendingChunk: '',
+    targetResponseId: null,
+    nextParentId: initialParentId,
+    completionTokens: 0,
+    promptTokens: Math.ceil(finalPrompt.length / 3.5),
+    currentThoughtIndex: 0,
+    reasoningBuffer: '',
+    lastFullContent: '',
+    lastRawContent: '',
+    lastFilteredSnapshot: '',
+    lastThinkingSnapshot: '',
+    lastVStrRaw: '',
+    lastFilteredFullContent: '',
+    lastDeltaThinkingFull: '',
+    loggedToolCalls: new ToolCallMultiset(),
+    lastParsePosition: 0,
+    toolCallDepth: 0,
+    pendingChunk: '',
   };
 }

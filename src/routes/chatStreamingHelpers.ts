@@ -1,7 +1,7 @@
 import { logStore } from '../services/logStore.ts';
 import { logQwenSSE } from '../services/qwenLogger.ts';
-import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
+import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import type { ParsedToolCall } from '../types/openai.ts';
 import { filterContent } from '../utils/contentFilter.ts';
 import { THINK_TAG_NAMES, TOOL_CALL_KEYWORDS } from '../utils/tagNames.ts';
@@ -12,6 +12,7 @@ import {
   extractDeltaContent,
   getSnapshotDelta,
 } from './chatHelpers.ts';
+import type { UsageTotals } from './chatStreaming.ts';
 
 import { writeContentDelta, writeReasoningEvent, writeToolCallEvent } from './writeHelpers.ts';
 
@@ -155,10 +156,7 @@ export class ToolCallMultiset {
  * Counting per-batch solves both: `key` appearing 2x in one batch claims 2
  * occurrences, while an already-claimed occurrence is not re-issued.
  */
-export function claimNewOccurrences<T extends { name: string; arguments: unknown }>(
-  batch: T[],
-  claimed: ToolCallMultiset,
-): T[] {
+export function claimNewOccurrences<T extends { name: string; arguments: unknown }>(batch: T[], claimed: ToolCallMultiset): T[] {
   // How many times each key appears in THIS batch.
   const inBatch = new Map<string, number>();
   for (const tc of batch) {
@@ -270,6 +268,11 @@ export interface StreamProcessingCtx {
   qwenLogFile?: string;
   sseEventCount?: number;
   bodyTools?: unknown[];
+  /**
+   * Billing hook, called once after the stream completes with final token
+   * counts. Kept optional so existing callers are unaffected.
+   */
+  onUsage?: (usage: UsageTotals) => void;
 }
 
 export type ProcessStreamResult = 'continue' | 'break_stream';

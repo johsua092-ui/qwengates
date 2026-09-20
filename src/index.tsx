@@ -1,17 +1,18 @@
 import 'dotenv/config';
 import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { Hono } from 'hono';
-import { bearerAuth } from 'hono/bearer-auth';
 import { cors } from 'hono/cors';
 
 import { rateLimitMiddleware, startAutoCleanup, stopAutoCleanup } from './middleware/rateLimit.ts';
 import { accountsRouter } from './routes/accounts.ts';
-import { tempEmailRouter } from './routes/tempEmail.ts';
 import { anthropicMessages } from './routes/anthropic.ts';
+import { registerApiKeyRoutes } from './routes/apiKeys.ts';
 import { chatCompletions } from './routes/chat.ts';
 import { configRouter } from './routes/config.ts';
 import { registerDashboardRoutes } from './routes/dashboard/dashboardRoutes.ts';
 import { debugNetworkApp } from './routes/debugNetwork.ts';
+import { tempEmailRouter } from './routes/tempEmail.ts';
+import { apiKeyStoreCount, authenticateApiKey, extractBearerToken } from './services/apiKeyStore.ts';
 import { getAccountCount, getAccountStats, getAccounts, getAvailableCount, initAuth, setStartupStatus } from './services/auth.ts';
 import { closeScreencast, handleInputEvent, startScreencast } from './services/cdpScreencast.ts';
 import { config, updateClaudeCodeSettings } from './services/configService.ts';
@@ -19,6 +20,7 @@ import { logStore } from './services/logStore.ts';
 import { configureAccount, fetchQwenModels } from './services/qwen.ts';
 import { getUsage, getUsageSummary, loadUsageStore } from './services/usageTracker.ts';
 import { safeCompare } from './utils/auth.ts';
+import './types/honoContext.ts';
 import { isBun } from './utils/env.ts';
 import { projectPath } from './utils/paths.ts';
 
@@ -134,14 +136,47 @@ const PING_RESPONSE = new Response('OK', {
 });
 app.get('/ping', () => PING_RESPONSE);
 
-// API Key protection for OpenAI-compatible routes
+// API Key protection for OpenAI-compatible routes.
+//
+// Two credential kinds are accepted:
+//   1. Managed keys from the SQLite store (per-key quotas/expiry/RPM). A
+//      managed key also gets its usage recorded after the request completes.
+//   2. The legacy single API_KEY from config/env, for backwards compatibility.
+//
+// When at least one managed key exists we still accept the legacy key, so an
+// existing deployment never breaks by turning this on.
 app.use('/v1/*', async (c, next) => {
-  const apiKey = config.get('API_KEY');
-  if (!apiKey) return await next();
-  return bearerAuth({ token: apiKey })(c, next);
+  const presented = extractBearerToken(c.req.header('Authorization'));
+  const hasManagedKeys = apiKeyStoreCount() > 0;
+  const legacyKey = config.get('API_KEY');
+
+  // Nothing configured at all -> auth is off (same as the old behaviour).
+  if (!hasManagedKeys && !legacyKey) return await next();
+
+  // 1. Legacy single key (backwards compatible).
+  if (legacyKey && presented && safeCompare(presented, legacyKey)) {
+    return await next();
+  }
+
+  // 2. Managed keys.
+  if (presented && hasManagedKeys) {
+    const result = authenticateApiKey(presented);
+    if (result.ok) {
+      // Stash the key id so the request can be billed once it completes.
+      c.set('apiKeyId', result.key.id);
+      return await next();
+    }
+    return c.json({ error: { message: result.reason, type: 'invalid_request_error', code: result.code } }, result.status);
+  }
+
+  // No usable credential was presented.
+  const code = presented ? 'invalid_key' : 'missing_key';
+  const message = presented ? 'Invalid API key' : 'Missing API key';
+  return c.json({ error: { message, type: 'invalid_request_error', code } }, 401);
 });
 
 registerDashboardRoutes(app);
+registerApiKeyRoutes(app);
 
 app.route('/debug/network', debugNetworkApp);
 
@@ -149,7 +184,11 @@ app.route('/debug/network', debugNetworkApp);
 app.use('/api/accounts*', async (c, next) => {
   const apiKey = config.get('API_KEY');
   if (!apiKey) return await next();
-  return bearerAuth({ token: apiKey })(c, next);
+  const presented = extractBearerToken(c.req.header('Authorization'));
+  if (!presented || !safeCompare(presented, apiKey)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  await next();
 });
 app.route('/api/accounts', accountsRouter);
 app.route('/api/temp-email', tempEmailRouter);
@@ -158,7 +197,11 @@ app.route('/api/temp-email', tempEmailRouter);
 app.use('/api/usage*', async (c, next) => {
   const apiKey = config.get('API_KEY');
   if (!apiKey) return await next();
-  return bearerAuth({ token: apiKey })(c, next);
+  const presented = extractBearerToken(c.req.header('Authorization'));
+  if (!presented || !safeCompare(presented, apiKey)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  await next();
 });
 app.get('/api/usage', (c) => c.json(getUsageSummary()));
 app.get('/api/usage/raw', (c) => c.json(getUsage()));
@@ -272,7 +315,8 @@ if (import.meta.main) {
   const hostArg = process.argv.indexOf('--host');
   const cliHost = hostArg !== -1 && process.argv[hostArg + 1] ? process.argv[hostArg + 1] : null;
   // Railway and cloud platforms need 0.0.0.0 to accept external connections
-  const isCloud = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENV || !!process.env.RAILWAY_SERVICE_ID || !!process.env.RENDER;
+  const isCloud =
+    process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENV || !!process.env.RAILWAY_SERVICE_ID || !!process.env.RENDER;
   const host = cliHost || config.get('HOST') || (isCloud ? '0.0.0.0' : 'localhost');
 
   // Show banner immediately on startup

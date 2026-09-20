@@ -32,9 +32,7 @@ var SETTINGS_SECTIONS = [
   {
     title: 'Critical Thinking',
     desc: 'Inject system prompt that forces chain-of-thought reasoning, progress tracking, and confidence levels.',
-    fields: [
-      { key: 'CRITICAL_THINKING', label: 'CRITICAL_THINKING', type: 'checkbox' },
-    ],
+    fields: [{ key: 'CRITICAL_THINKING', label: 'CRITICAL_THINKING', type: 'checkbox' }],
   },
   {
     title: 'Session & Auth',
@@ -108,7 +106,139 @@ function renderSettingsForm() {
     }
     html += '</div></fieldset>';
   }
-  container.innerHTML = html + renderDeleteAllChatsSection() + renderClaudeCodeInfo();
+  container.innerHTML = html + renderPasswordSection() + renderDeleteAllChatsSection() + renderClaudeCodeInfo();
+}
+
+/* ── Dashboard password ── */
+
+/* Inline SVG (stroke, currentColor) — never emoji. */
+var ICON_KEY =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="M17 6l3 3"/><path d="M14 9l3 3"/></svg>';
+
+var ICON_LOCK =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
+
+var ICON_ALERT =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 3 2 20h20L12 3z"/><path d="M12 9v5"/><path d="M12 17.5h.01"/></svg>';
+
+var ICON_CHECK =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>';
+
+function renderPasswordSection() {
+  return (
+    '<fieldset class="settings-section" id="pwSection">' +
+    '<div class="settings-section-title">' +
+    ICON_KEY +
+    ' Dashboard Password</div>' +
+    '<p class="settings-section-desc">Ganti password login dashboard. Password lama wajib diisi.</p>' +
+    '<div id="pwStatus" style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:12px">Memuat status…</div>' +
+    '<div class="settings-fields">' +
+    '<div class="settings-field">' +
+    '<label for="pwCurrent">Password lama</label>' +
+    '<input type="password" id="pwCurrent" autocomplete="current-password" placeholder="password lama">' +
+    '</div>' +
+    '<div class="settings-field">' +
+    '<label for="pwNext">Password baru</label>' +
+    '<input type="password" id="pwNext" autocomplete="new-password" placeholder="minimal 4 karakter">' +
+    '</div>' +
+    '<div class="settings-field">' +
+    '<label for="pwConfirm">Ulangi password baru</label>' +
+    '<input type="password" id="pwConfirm" autocomplete="new-password" placeholder="ulangi password baru">' +
+    '</div>' +
+    '</div>' +
+    '<div id="pwMessage" style="font-size:0.85rem;margin-top:10px"></div>' +
+    '<button class="save-btn" id="pwSaveBtn" style="margin-top:12px" onclick="savePassword()">' +
+    ICON_LOCK +
+    ' Save Password</button>' +
+    '</fieldset>'
+  );
+}
+
+async function loadPasswordStatus() {
+  var el = document.getElementById('pwStatus');
+  if (!el) return;
+  try {
+    var res = await fetch('/api/dashboard/password', { headers: authHeaders() });
+    if (!res.ok) {
+      el.textContent = '';
+      return;
+    }
+    var data = await res.json();
+    if (data.source === 'env') {
+      el.innerHTML =
+        ICON_ALERT +
+        ' <strong>DASHBOARD_PASSWORD</strong> di .env lagi menang, jadi password di sini nggak ngefek. ' +
+        'Hapus dulu env-nya kalau mau ganti dari Settings.';
+    } else if (data.source === 'settings') {
+      el.innerHTML = ICON_CHECK + ' Password aktif dari Settings.';
+      document.getElementById('pwSaveBtn').disabled = false;
+    } else {
+      el.innerHTML = ICON_ALERT + ' Belum pernah diganti — masih pakai password bawaan <code>changeme</code>.';
+      document.getElementById('pwSaveBtn').disabled = false;
+    }
+    if (data.source === 'env' && document.getElementById('pwSaveBtn')) {
+      document.getElementById('pwSaveBtn').disabled = true;
+    }
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+async function savePassword() {
+  var msg = document.getElementById('pwMessage');
+  var current = document.getElementById('pwCurrent').value;
+  var next = document.getElementById('pwNext').value;
+  var confirm = document.getElementById('pwConfirm').value;
+
+  msg.style.color = 'var(--danger)';
+  if (!current) {
+    msg.textContent = 'Password lama wajib diisi.';
+    return;
+  }
+  if (next.length < 4) {
+    msg.textContent = 'Password baru minimal 4 karakter.';
+    return;
+  }
+  if (next !== confirm) {
+    msg.textContent = 'Ulangi password baru nggak sama.';
+    return;
+  }
+
+  var btn = document.getElementById('pwSaveBtn');
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/dashboard/password', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ current: current, next: next }),
+    });
+    var data = await res.json().catch(function () {
+      return {};
+    });
+    if (res.ok) {
+      msg.style.color = 'var(--success, #22c55e)';
+      msg.textContent = 'Password berhasil diganti.';
+      document.getElementById('pwCurrent').value = '';
+      document.getElementById('pwNext').value = '';
+      document.getElementById('pwConfirm').value = '';
+      showToast('Password diganti');
+      loadPasswordStatus();
+      return;
+    }
+    msg.textContent = data.error || 'Gagal ganti password.';
+    btn.disabled = false;
+  } catch (e) {
+    msg.textContent = 'Gagal nyambung ke server.';
+    btn.disabled = false;
+  }
 }
 
 function renderDeleteAllChatsSection() {
@@ -306,6 +436,7 @@ async function loadSettings() {
     console.error('Settings load error:', e);
   }
   renderSettingsForm();
+  loadPasswordStatus();
   // Hide restart badges for fields where value hasn't changed
   setTimeout(function () {
     for (var s = 0; s < SETTINGS_SECTIONS.length; s++) {

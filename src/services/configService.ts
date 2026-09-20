@@ -33,6 +33,18 @@ export interface ConfigSchema {
   CLAUDE_CODE_PROXY: string;
   CRITICAL_THINKING: string;
   CAPSOLVER_API_KEY: string;
+  // ── Dashboard login ──────────────────────────────────────────────
+  /**
+   * Shared dashboard password (login gate). Deliberately EMPTY by default:
+   * a non-empty default would shadow the value saved from Settings, making the
+   * "change password" feature silently do nothing. When this is empty the
+   * Settings password (or the built-in 'changeme' fallback) is used.
+   */
+  DASHBOARD_PASSWORD: string;
+  /** Secret used to sign session cookies. Generated once and persisted if unset. */
+  DASHBOARD_SESSION_SECRET: string;
+  /** Session lifetime in ms. Default 7 days. */
+  DASHBOARD_SESSION_TTL_MS: string;
 }
 
 export const DEFAULT_CONFIG: ConfigSchema = {
@@ -65,6 +77,9 @@ export const DEFAULT_CONFIG: ConfigSchema = {
   CLAUDE_CODE_PROXY: 'false',
   CRITICAL_THINKING: 'true',
   CAPSOLVER_API_KEY: '',
+  DASHBOARD_PASSWORD: '',
+  DASHBOARD_SESSION_SECRET: '',
+  DASHBOARD_SESSION_TTL_MS: '604800000',
 };
 
 const CONFIG_KEYS = new Set<string>(Object.keys(DEFAULT_CONFIG));

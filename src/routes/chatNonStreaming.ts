@@ -1,7 +1,11 @@
 import { Context } from 'hono';
+import { config } from '../services/configService.ts';
 import { logStore } from '../services/logStore.ts';
 import { sessionPool } from '../services/sessionPool.ts';
 import { detectParallelToolLoop } from '../tools/guard.ts';
+import { parseToolCallLimit } from '../tools/toolCallLimit.ts';
+import { healToolCall } from '../tools/toolHealer.ts';
+import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import type { Message, OpenAIRequest, ParsedToolCall } from '../types/openai.ts';
 import { filterContent } from '../utils/contentFilter.ts';
 import {
@@ -12,12 +16,7 @@ import {
   processToolCallsThroughGuard,
   ToolSpamGuard,
 } from './chatHelpers.ts';
-
-import { config } from '../services/configService.ts';
-
-import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
-import { healToolCall } from '../tools/toolHealer.ts';
-import { parseToolCallLimit } from '../tools/toolCallLimit.ts';
+import type { UsageTotals } from './chatStreaming.ts';
 import { extractLocalMcpToolCalls, toolCallDedupKey } from './chatStreamingHelpers.ts';
 
 export interface NonStreamingContext {
@@ -32,6 +31,8 @@ export interface NonStreamingContext {
   sessionHeaders: any;
   toolCalling: boolean;
   cleanOutput: boolean;
+  /** Billing hook, fired once with final token counts. */
+  onUsage?: (usage: UsageTotals) => void;
 }
 
 interface StreamProcessorState {
@@ -287,6 +288,15 @@ function buildResponseFromState(state: StreamProcessorState, ctx: NonStreamingCo
     completion_tokens_details: { reasoning_tokens: reasoningTokensEstimate },
     prompt_tokens_details: { cached_tokens: 0 },
   };
+
+  // Billing hook: charge the requesting API key. Never let billing break the response.
+  if (ctx.onUsage) {
+    try {
+      ctx.onUsage({ promptTokens: state.promptTokens, completionTokens: state.completionTokens });
+    } catch (usageErr: any) {
+      logStore.log('error', 'billing', `usage hook failed: ${usageErr?.message || usageErr}`);
+    }
+  }
 
   const contentForUser = cleanTextOfXmlArtifacts(state.lastFullContent).cleanedText;
   state.lastFullContent = contentForUser;

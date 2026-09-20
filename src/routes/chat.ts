@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { Context } from 'hono';
+import { recordApiKeyUsage } from '../services/apiKeyStore.ts';
 import { pickAccount, throttleAccount } from '../services/auth.ts';
 import { config } from '../services/configService.ts';
 import { logStore } from '../services/logStore.ts';
@@ -20,6 +21,7 @@ import {
   handleImageModelFallback,
 } from './chatHelpers.ts';
 import { handleNonStreamingRequest } from './chatNonStreaming.ts';
+import type { UsageTotals } from './chatStreaming.ts';
 import { handleStreamingRequest } from './chatStreaming.ts';
 
 export {
@@ -417,6 +419,25 @@ function populateLogEntry(logEntry: any, body: OpenAIRequest, messages: any[]): 
   };
 }
 
+/**
+ * Build the per-request billing hook for managed API keys.
+ *
+ * Returns undefined when the request did not authenticate with a managed key
+ * (e.g. legacy API_KEY or no auth configured), so no cost is incurred and the
+ * stream path stays allocation-free in that case.
+ */
+function buildUsageRecorder(c: Context): ((usage: UsageTotals) => void) | undefined {
+  const apiKeyId = c.get('apiKeyId');
+  if (!apiKeyId) return undefined;
+  return (usage) => {
+    try {
+      recordApiKeyUsage(apiKeyId, usage.promptTokens, usage.completionTokens);
+    } catch (err: any) {
+      logStore.log('error', 'billing', `failed to record usage for key: ${err?.message || err}`);
+    }
+  };
+}
+
 export async function chatCompletions(c: Context) {
   const logId = crypto.randomUUID();
   const _requestStartTime = Date.now();
@@ -454,15 +475,7 @@ export async function chatCompletions(c: Context) {
       );
     }
 
-    const {
-      session,
-      sessionMessages,
-      nextParentId,
-      sessionHeaders,
-      resolvedEmail,
-      stream,
-      qwenAbortController,
-    } = await setupSession(
+    const { session, sessionMessages, nextParentId, sessionHeaders, resolvedEmail, stream, qwenAbortController } = await setupSession(
       messages,
       body,
       contextCheck.availableTokens!,
@@ -533,6 +546,7 @@ export async function chatCompletions(c: Context) {
         sessionHeaders,
         toolCalling,
         cleanOutput,
+        onUsage: buildUsageRecorder(c),
       });
     }
 
@@ -550,6 +564,7 @@ export async function chatCompletions(c: Context) {
       toolCalling,
       cleanOutput,
       retryStream,
+      onUsage: buildUsageRecorder(c),
     });
   } catch (err: any) {
     console.error(`[Chat] <<< Request failed after ${Date.now() - _requestStartTime}ms: ${err?.message || err}`);

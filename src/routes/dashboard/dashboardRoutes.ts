@@ -1,9 +1,20 @@
 import { existsSync, readFileSync } from 'fs';
 import { Hono } from 'hono';
-import { bearerAuth } from 'hono/bearer-auth';
 import { resolve } from 'path';
 import { getAccountCount, getAccountStats, getAllAccountEmails, getAvailableCount, initAuth } from '../../services/auth.ts';
 import { config, isValidKey } from '../../services/configService.ts';
+import {
+  activePasswordSource,
+  changePassword,
+  clearSessionCookie,
+  createSessionToken,
+  hasStoredPassword,
+  isAuthenticated,
+  LOGIN_PATH,
+  requireSessionPage,
+  sessionCookie,
+  verifyPassword,
+} from '../../services/dashboardAuth.ts';
 import { logStore } from '../../services/logStore.ts';
 import { monitorStore } from '../../services/monitorStore.ts';
 
@@ -13,6 +24,8 @@ import { checkApiKeyAuth } from '../../utils/auth.ts';
 import { projectPath } from '../../utils/paths.ts';
 import { APP_VERSION } from '../../utils/version.ts';
 import { accountsHtml } from './accounts.ts';
+import { keysHtml } from './keys.ts';
+import { loginHtml } from './login.ts';
 import { monitorHtml } from './monitor.ts';
 import { networkHtml } from './network.ts';
 import { overviewHtml } from './overview.ts';
@@ -287,21 +300,88 @@ function logJsonHandler(c: any) {
   return c.json(serialized.map(sanitizeLogEntry));
 }
 
+/**
+ * Gate for dashboard data endpoints.
+ *
+ * Accepts either a valid browser session cookie (the normal dashboard path) or
+ * the legacy `API_KEY` bearer token, so existing scripts and the front-end's
+ * `window.API_KEY` fetches keep working unchanged.
+ */
 function requireApiKey(c: any, next: () => Promise<void>) {
+  if (isAuthenticated(c)) return next();
   const denied = checkApiKeyAuth(c);
   if (denied) return denied;
   return next();
 }
 
 export function registerDashboardRoutes(app: Hono): void {
-  app.get('/dashboard', serveHtml(overviewHtml));
-  app.get('/dashboard/accounts', serveHtml(accountsHtml));
-  app.get('/dashboard/usage', serveHtml(usageHtml));
-  app.get('/dashboard/network', serveHtml(networkHtml));
-  app.get('/dashboard/settings', serveHtml(settingsHtml));
-  app.get('/dashboard/monitor', serveHtml(monitorHtml));
+  // ── Login gate ───────────────────────────────────────────────────
+  app.get(LOGIN_PATH, (c) => {
+    if (isAuthenticated(c)) return c.redirect('/dashboard');
+    return c.html(loginHtml(false));
+  });
+
+  app.post(LOGIN_PATH, async (c) => {
+    const form = await c.req.parseBody();
+    const submitted = typeof form.password === 'string' ? form.password : '';
+    if (!verifyPassword(submitted)) {
+      return c.html(loginHtml(true), 401);
+    }
+    c.header('Set-Cookie', sessionCookie(createSessionToken()));
+    return c.redirect('/dashboard');
+  });
+
+  app.post('/logout', (c) => {
+    c.header('Set-Cookie', clearSessionCookie());
+    return c.redirect(LOGIN_PATH);
+  });
+
+  app.get('/dashboard', requireSessionPage(), serveHtml(overviewHtml));
+  app.get('/dashboard/accounts', requireSessionPage(), serveHtml(accountsHtml));
+  app.get('/dashboard/keys', requireSessionPage(), serveHtml(keysHtml));
+  app.get('/dashboard/usage', requireSessionPage(), serveHtml(usageHtml));
+  app.get('/dashboard/network', requireSessionPage(), serveHtml(networkHtml));
+  app.get('/dashboard/settings', requireSessionPage(), serveHtml(settingsHtml));
+  app.get('/dashboard/monitor', requireSessionPage(), serveHtml(monitorHtml));
 
   app.get('/dashboard/static/:file', dashboardStaticHandler);
+
+  // ── Password management (Settings page) ──────────────────────────
+  /** Report which password source is active so the UI can explain overrides. */
+  app.get(
+    '/api/dashboard/password',
+    async (c, next) => requireApiKey(c, next),
+    (c) => {
+      return c.json({
+        source: activePasswordSource(),
+        hasStoredPassword: hasStoredPassword(),
+      });
+    },
+  );
+
+  /**
+   * Change the dashboard password. Requires the current password, and refuses
+   * when an env override is active (the change would have no effect).
+   */
+  app.post(
+    '/api/dashboard/password',
+    async (c, next) => requireApiKey(c, next),
+    async (c) => {
+      let body: any;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: 'body harus JSON' }, 400);
+      }
+
+      const result = changePassword(typeof body?.current === 'string' ? body.current : '', typeof body?.next === 'string' ? body.next : '');
+      if (!result.ok) return c.json({ error: result.error }, result.status);
+
+      // Rotate the session so the new password takes effect immediately.
+      c.header('Set-Cookie', sessionCookie(createSessionToken()));
+      return c.json({ ok: true, source: activePasswordSource() });
+    },
+  );
 
   app.get('/', (c) => c.redirect('/dashboard'));
   app.get('/health', healthHandler);
@@ -320,24 +400,8 @@ export function registerDashboardRoutes(app: Hono): void {
     },
   );
 
-  app.post(
-    '/admin/accounts/reload',
-    async (c, next) => {
-      const apiKey = config.get('API_KEY');
-      if (!apiKey) return await next();
-      return bearerAuth({ token: apiKey })(c, next);
-    },
-    accountsReloadHandler,
-  );
-  app.post(
-    '/dashboard/accounts/delete-all-chats',
-    async (c, next) => {
-      const apiKey = config.get('API_KEY');
-      if (!apiKey) return await next();
-      return bearerAuth({ token: apiKey })(c, next);
-    },
-    deleteAllChatsHandler,
-  );
+  app.post('/admin/accounts/reload', async (c, next) => requireApiKey(c, next), accountsReloadHandler);
+  app.post('/dashboard/accounts/delete-all-chats', async (c, next) => requireApiKey(c, next), deleteAllChatsHandler);
 
   app.get('/system/logs', async (c, next) => requireApiKey(c, next), systemLogsHandler);
   app.get('/metrics/model-health', async (c, next) => requireApiKey(c, next), modelHealthHandler);

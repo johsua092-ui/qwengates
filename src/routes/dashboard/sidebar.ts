@@ -42,6 +42,12 @@ const NAV_ITEMS: NavItem[] = [
     svg: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   },
   {
+    id: 'keys',
+    label: 'API Keys',
+    href: '/dashboard/keys',
+    svg: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="M17 6l3 3"/><path d="M14 9l3 3"/></svg>`,
+  },
+  {
     id: 'settings',
     label: 'Settings',
     href: '/dashboard/settings',

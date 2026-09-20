@@ -1,15 +1,16 @@
 import { config } from '../services/configService.ts';
 import { logStore } from '../services/logStore.ts';
-import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { healToolCall } from '../tools/toolHealer.ts';
+import { cleanTextOfXmlArtifacts, parseXmlToolCalls, xmlToolCallToParsed } from '../tools/xmlToolParser.ts';
 import { type AmplificationGuardState, checkAmplificationGuard, getSnapshotDelta, parseQwenErrorPayload } from './chatHelpers.ts';
+import type { UsageTotals } from './chatStreaming.ts';
 import {
   claimNewOccurrences,
   filterContentPipeline,
   processStreamData,
-  toolCallDedupKey,
   type StreamProcessingCtx,
   type StreamProcessingState,
+  toolCallDedupKey,
 } from './chatStreamingHelpers.ts';
 import { checkFinalAmplification, scheduleCleanup } from './cleanupHelpers.ts';
 import { buildChunkEvent, buildUsage, makeChoice, writeEvent, writeReasoningEvent, writeToolCallEvent } from './writeHelpers.ts';
@@ -122,6 +123,8 @@ export async function handlePostStreamCompletion(
     enableContentFiltering: boolean;
     includeUsage: boolean;
     bodyTools?: unknown[];
+    /** Billing hook, fired once with final token counts. */
+    onUsage?: (usage: UsageTotals) => void;
   },
   cleanup: {
     reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -144,6 +147,7 @@ export async function handlePostStreamCompletion(
     enableContentFiltering,
     includeUsage,
     bodyTools,
+    onUsage,
   } = args;
   let emittedToolCallCount = args.emittedToolCallCount;
   const { reader, heartbeatInterval, chatId, sessionHeaders, email, sessionPool } = cleanup;
@@ -270,6 +274,15 @@ export async function handlePostStreamCompletion(
 
     const usage = buildUsage(streamState.promptTokens, streamState.completionTokens, streamState.reasoningBuffer);
     const finalFinishReason = effectiveToolCallCount > 0 ? 'tool_calls' : 'stop';
+
+    // Billing hook: charge the requesting API key. Never let billing break the stream.
+    if (onUsage) {
+      try {
+        onUsage({ promptTokens: streamState.promptTokens, completionTokens: streamState.completionTokens });
+      } catch (usageErr: any) {
+        logStore.log('error', 'billing', `usage hook failed: ${usageErr?.message || usageErr}`);
+      }
+    }
 
     await writeEvent(
       streamWriter,
