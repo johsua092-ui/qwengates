@@ -14,7 +14,7 @@ import { appendFileSync } from 'fs';
 import { join } from 'path';
 import { launch as cloakLaunch } from 'cloakbrowser';
 import { chromium } from 'playwright';
-import { solveAliyunSlider, detectAliyunSlider } from '../src/services/captchaSolver.ts';
+import { solveCaptcha, detectAliyunSlider } from '../src/services/captchaSolver.ts';
 import { waitForOtp, storeOtp } from '../src/services/otpService.ts';
 
 interface CliArgs {
@@ -122,69 +122,64 @@ async function registerOneAccount(args: CliArgs, index: number): Promise<{ succe
     const page = await context.newPage();
 
     console.log('[-] Navigasi ke halaman registrasi Qwen...');
-    await page.goto('https://chat.qwen.ai/auth?mode=register', {
+    await page.goto('https://chat.qwen.ai/auth', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
+    await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(2000);
+    // Switch to signup tab
+    try {
+      await page.click('.qwenchat-auth-pc-switch-button');
+      await page.waitForTimeout(1000);
+    } catch {}
 
-    // Deteksi form registrasi
-    const inputs = await page.$$('input:not([type="hidden"])');
-    if (inputs.length < 3) {
-      // Fallback cek url /auth?action=signup
-      console.log('[-] Mencoba route /auth?action=signup...');
-      await page.goto('https://chat.qwen.ai/auth?action=signup', { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(2000);
-    }
-
-    const emailInput = (await page.$('input[type="email"], input[name="email"], input[placeholder*="email" i]')) || (await page.$('input'));
-    const pwdInput = await page.$('input[type="password"], input[name="password"]');
-
-    if (emailInput) {
-      console.log('[-] Mengisi form registrasi...');
-      await emailInput.fill(email);
-      await page.waitForTimeout(300);
-    }
-
-    if (pwdInput) {
-      await pwdInput.fill(password);
-      await page.waitForTimeout(300);
-      // Cek konfirmasi password jika ada
-      const confirmPwd = await page.$('input[name="confirmPassword"], input[placeholder*="confirm" i]');
-      if (confirmPwd) {
-        await confirmPwd.fill(password);
-        await page.waitForTimeout(300);
-      }
-    }
-
-    // Centang checkbox syarat/ketentuan jika ada
-    const checkbox = await page.$('input[type="checkbox"]');
-    if (checkbox && !(await checkbox.isChecked())) {
-      await checkbox.click();
+    console.log('[-] Mengisi form registrasi...');
+    try {
+      await page.locator('input[name="username"]').pressSequentially(username, { delay: 30 });
       await page.waitForTimeout(200);
+      await page.locator('input[name="email"]').pressSequentially(email, { delay: 30 });
+      await page.waitForTimeout(200);
+      await page.locator('input[name="password"]').pressSequentially(password, { delay: 30 });
+      await page.waitForTimeout(200);
+      await page.locator('input[name="checkPassword"]').pressSequentially(password, { delay: 30 });
+      await page.waitForTimeout(200);
+    } catch {
+      // Fallback ke selector generic
+      const emailInput = await page.$('input[type="email"], input[name="email"]');
+      const pwdInput = await page.$('input[type="password"], input[name="password"]');
+      if (emailInput) await emailInput.fill(email);
+      if (pwdInput) await pwdInput.fill(password);
     }
 
-    // Klik tombol submit/register
-    const submitBtn =
-      (await page.$('button[type="submit"]')) ||
-      (await page.$('button:has-text("Sign up"), button:has-text("Register"), button:has-text("Create account"), button:has-text("Continue")'));
+    // Centang checkbox
+    try {
+      await page.click('.qwenchat-auth-pc-register-policy-checkbox');
+      await page.waitForTimeout(300);
+    } catch {
+      const checkbox = await page.$('input[type="checkbox"]');
+      if (checkbox && !(await checkbox.isChecked())) await checkbox.click();
+    }
 
+    // Submit
+    const submitBtn = await page.$('button[type="submit"]');
     if (submitBtn) {
       console.log('[-] Submit form registrasi...');
       await submitBtn.click();
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000);
     }
 
-    // Cek apakah muncul Aliyun slider
+    // Cek apakah muncul Aliyun WAF captcha (puzzle atau slider)
     const hasSlider = await detectAliyunSlider(page);
     if (hasSlider) {
-      console.log('[*] Aliyun AWSC slider terdeteksi! Menjalankan local biometric solver...');
-      const solveRes = await solveAliyunSlider(page, 3);
+      console.log('[*] Aliyun WAF captcha terdeteksi! Menjalankan local solver...');
+      const solveRes = await solveCaptcha(page);
       if (solveRes.success) {
-        console.log('[+] Aliyun slider berhasil dilewati secara lokal!');
+        console.log(`[+] Captcha berhasil dilewati (${solveRes.type})!`);
+        // Tunggu page settle setelah navigation
+        await page.waitForTimeout(2000);
       } else {
-        console.warn(`[!] Slider solver gagal: ${solveRes.error}`);
+        console.warn(`[!] Captcha solver gagal: ${solveRes.error}`);
       }
     }
 
