@@ -97,78 +97,73 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
 }
 
 /**
- * Contextual darkening — finds where a 52px-wide window is darkest relative
- * to its neighbors. The puzzle hole appears as a region darker than the
- * surrounding image content.
+ * Sobel edge-pair detection — finds the left edge of the puzzle hole.
  *
- * pieceBase64 is kept as param for API compat but unused (hole detected from bg alone).
+ * The puzzle hole has two sharp vertical edges (left & right) separated by
+ * ~52px (piece width ±10). We compute horizontal gradient per column via
+ * Sobel-x, then find the pair of columns with the highest combined gradient
+ * at ~piece-width separation. Returns the left edge x (= drag distance).
+ *
+ * Skip 30px border on each side to avoid image frame edges.
  */
 async function findPuzzleOffset(bgBase64: string, _pieceBase64: string): Promise<number> {
   try {
     const sharp = await import('sharp');
 
     const bgBuffer = Buffer.from(bgBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
-    const bgRaw = await sharp.default(bgBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    // Use RGB (no alpha) for gradient — cleaner signal
+    const bgRaw = await sharp.default(bgBuffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
 
-    const bgW = bgRaw.info.width;
-    const bgH = bgRaw.info.height;
-    const bgPixels = bgRaw.data as Buffer;
+    const W = bgRaw.info.width;
+    const H = bgRaw.info.height;
+    const px = bgRaw.data as Buffer;
+    const CH = 3;
 
+    const getGray = (x: number, y: number): number => {
+      if (x < 0 || x >= W || y < 0 || y >= H) return 0;
+      const i = (y * W + x) * CH;
+      return (px[i] + px[i + 1] + px[i + 2]) / 3;
+    };
+
+    // Horizontal gradient (Sobel-x) per column, skip top/bottom 5px
+    const colGrad: number[] = new Array(W).fill(0);
+    for (let x = 1; x < W - 1; x++) {
+      let total = 0;
+      for (let y = 5; y < H - 5; y++) {
+        total += Math.abs(getGray(x + 1, y) - getGray(x - 1, y));
+      }
+      colGrad[x] = total / (H - 10);
+    }
+
+    // Find best left-right edge pair with separation [44, 60]px, skip 30px border
     const PIECE_W = 52;
-    const BORDER = 15;
-    const scanH = Math.min(bgH, 200);
+    const SKIP = 30;
+    const SEP_MIN = 44, SEP_MAX = 60;
 
-    // Interpolate per-pixel average brightness
-    const colBrightness: number[] = new Array(bgW).fill(0);
-    const colCount: number[] = new Array(bgW).fill(0);
-    for (let y = 10; y < scanH - 10; y++) {
-      for (let x = 0; x < bgW; x++) {
-        const idx = (y * bgW + x) * 4;
-        if (bgPixels[idx + 3] > 50) {
-          colBrightness[x] += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
-          colCount[x]++;
+    let bestScore = 0;
+    let bestLeft = Math.floor(W / 3); // fallback center-left
+
+    for (let x = SKIP; x < W - PIECE_W - SKIP; x++) {
+      const lg = colGrad[x];
+      if (lg < 3) continue; // skip weak gradients early
+      for (let sep = SEP_MIN; sep <= SEP_MAX; sep++) {
+        const rx = x + sep;
+        if (rx >= W - SKIP) break;
+        const score = lg + colGrad[rx];
+        if (score > bestScore) {
+          bestScore = score;
+          bestLeft = x;
         }
       }
     }
-    const colAvg = colBrightness.map((sum, x) => colCount[x] > 0 ? sum / colCount[x] : 128);
 
-    // Contextual darkening: how much darker is the 52px window vs its neighbors?
-    let bestScore = -Infinity;
-    let bestX = BORDER;
-
-    for (let x = BORDER; x < bgW - PIECE_W - BORDER; x++) {
-      // Inside window average
-      let insideSum = 0, insideCnt = 0;
-      for (let xi = x; xi < x + PIECE_W; xi++) {
-        if (colCount[xi] > 0) { insideSum += colAvg[xi]; insideCnt++; }
-      }
-      if (insideCnt === 0) continue;
-      const insideAvg = insideSum / insideCnt;
-
-      // Context: 30px left + 30px right of window
-      let ctxSum = 0, ctxCnt = 0;
-      for (let xi = Math.max(BORDER, x - 30); xi < x; xi++) {
-        if (colCount[xi] > 0) { ctxSum += colAvg[xi]; ctxCnt++; }
-      }
-      for (let xi = x + PIECE_W; xi < Math.min(bgW - BORDER, x + PIECE_W + 30); xi++) {
-        if (colCount[xi] > 0) { ctxSum += colAvg[xi]; ctxCnt++; }
-      }
-      if (ctxCnt === 0) continue;
-      const ctxAvg = ctxSum / ctxCnt;
-
-      // Score: how much darker inside is than context (hole = dark region)
-      const score = ctxAvg - insideAvg;
-      if (score > bestScore) {
-        bestScore = score;
-        bestX = x;
-      }
-    }
-
-    logStore.log('info', 'captcha', `[PuzzleSolver] Contextual darkening: hole at x=${bestX} (score=${bestScore.toFixed(1)})`);
-    return bestX;
+    logStore.log('info', 'captcha',
+      `[PuzzleSolver] Sobel edge-pair: hole left_x=${bestLeft} (score=${bestScore.toFixed(1)})`
+    );
+    return bestLeft;
   } catch (err: any) {
-    logStore.log('warn', 'captcha', `[PuzzleSolver] Template matching failed: ${err.message}, fallback 180px`);
-    return 180;
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Edge detection failed: ${err.message}, fallback 150px`);
+    return 150;
   }
 }
 
