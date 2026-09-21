@@ -97,16 +97,13 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
 }
 
 /**
- * Template matching — improved approach for Aliyun puzzle captcha.
+ * Contextual darkening — finds where a 52px-wide window is darkest relative
+ * to its neighbors. The puzzle hole appears as a region darker than the
+ * surrounding image content.
  *
- * The hole in the background image has two characteristics:
- * 1. **Low variance**: The hole interior is uniform (consistent dark or shadowed pixels)
- * 2. **Low brightness**: The hole appears darker than surrounding scenery
- *
- * We combine both metrics, with priority given to the LOW VARIANCE method
- * (most reliable for finding the flat/uniform interior of the cutout hole).
+ * pieceBase64 is kept as param for API compat but unused (hole detected from bg alone).
  */
-async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<number> {
+async function findPuzzleOffset(bgBase64: string, _pieceBase64: string): Promise<number> {
   try {
     const sharp = await import('sharp');
 
@@ -117,54 +114,60 @@ async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<
     const bgH = bgRaw.info.height;
     const bgPixels = bgRaw.data as Buffer;
 
-    // Scan range: skip 20px border on each side to avoid edge shadows
-    const SKIP = 20;
+    const PIECE_W = 52;
+    const BORDER = 15;
     const scanH = Math.min(bgH, 200);
-    const pieceW = 52; // known piece width
 
-    // Method 1: Lowest column variance (hole interior is most uniform)
-    let minVariance = Infinity;
-    let varBestX = SKIP;
-
-    for (let x = SKIP; x < bgW - pieceW - SKIP; x++) {
-      const grays: number[] = [];
-      for (let y = Math.floor(scanH * 0.15); y < Math.floor(scanH * 0.85); y++) {
+    // Interpolate per-pixel average brightness
+    const colBrightness: number[] = new Array(bgW).fill(0);
+    const colCount: number[] = new Array(bgW).fill(0);
+    for (let y = 10; y < scanH - 10; y++) {
+      for (let x = 0; x < bgW; x++) {
         const idx = (y * bgW + x) * 4;
-        grays.push((bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3);
+        if (bgPixels[idx + 3] > 50) {
+          colBrightness[x] += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
+          colCount[x]++;
+        }
       }
-      const mean = grays.reduce((a, b) => a + b, 0) / grays.length;
-      const variance = grays.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / grays.length;
-      if (variance < minVariance) {
-        minVariance = variance;
-        varBestX = x;
+    }
+    const colAvg = colBrightness.map((sum, x) => colCount[x] > 0 ? sum / colCount[x] : 128);
+
+    // Contextual darkening: how much darker is the 52px window vs its neighbors?
+    let bestScore = -Infinity;
+    let bestX = BORDER;
+
+    for (let x = BORDER; x < bgW - PIECE_W - BORDER; x++) {
+      // Inside window average
+      let insideSum = 0, insideCnt = 0;
+      for (let xi = x; xi < x + PIECE_W; xi++) {
+        if (colCount[xi] > 0) { insideSum += colAvg[xi]; insideCnt++; }
+      }
+      if (insideCnt === 0) continue;
+      const insideAvg = insideSum / insideCnt;
+
+      // Context: 30px left + 30px right of window
+      let ctxSum = 0, ctxCnt = 0;
+      for (let xi = Math.max(BORDER, x - 30); xi < x; xi++) {
+        if (colCount[xi] > 0) { ctxSum += colAvg[xi]; ctxCnt++; }
+      }
+      for (let xi = x + PIECE_W; xi < Math.min(bgW - BORDER, x + PIECE_W + 30); xi++) {
+        if (colCount[xi] > 0) { ctxSum += colAvg[xi]; ctxCnt++; }
+      }
+      if (ctxCnt === 0) continue;
+      const ctxAvg = ctxSum / ctxCnt;
+
+      // Score: how much darker inside is than context (hole = dark region)
+      const score = ctxAvg - insideAvg;
+      if (score > bestScore) {
+        bestScore = score;
+        bestX = x;
       }
     }
 
-    // Method 2: Darkest strip (skip edge columns, scan middle portion)
-    let minBrightness = Infinity;
-    let darkBestX = SKIP;
-
-    for (let x = SKIP; x < bgW - pieceW - SKIP; x++) {
-      let total = 0;
-      for (let y = Math.floor(scanH * 0.15); y < Math.floor(scanH * 0.85); y++) {
-        const idx = (y * bgW + x) * 4;
-        total += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
-      }
-      if (total < minBrightness) {
-        minBrightness = total;
-        darkBestX = x;
-      }
-    }
-
-    // Variance method is more reliable — weight it 70%
-    const finalX = Math.round(varBestX * 0.7 + darkBestX * 0.3);
-
-    logStore.log('info', 'captcha',
-      `[PuzzleSolver] Variance x=${varBestX}(${minVariance.toFixed(0)}), Darkness x=${darkBestX}, Final x=${finalX}`
-    );
-    return finalX;
+    logStore.log('info', 'captcha', `[PuzzleSolver] Contextual darkening: hole at x=${bestX} (score=${bestScore.toFixed(1)})`);
+    return bestX;
   } catch (err: any) {
-    logStore.log('warn', 'captcha', `[PuzzleSolver] Template matching failed: ${err.message}, using fallback`);
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Template matching failed: ${err.message}, fallback 180px`);
     return 180;
   }
 }
@@ -174,40 +177,34 @@ async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<
  * This appears after form submission as WAF challenge.
  */
 async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult> {
+  // Step 1: Intercept the Aliyun captcha XHR to get CDN image URLs
+  // The API response contains Image (back.png) and PuzzleImage (shadow.png) paths
+  let captchaImageUrl = '';
+  let captchaBodyWidth = 300;
+
+  try {
+    captchaImageUrl = await page.evaluate(() => {
+      const img = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
+      return img ? img.src : '';
+    });
+    const bodyEl = await page.evaluate(() => {
+      const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
+      return body ? body.getBoundingClientRect().width : 300;
+    });
+    captchaBodyWidth = bodyEl || 300;
+  } catch {}
+
+  // Try to get the CDN URLs directly (intercepted from network)
+  // The back.png URL can be constructed from the img src or from XHR response
+  // img.src is a base64 data URL - we need to use it directly
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     logStore.log('info', 'captcha', `[PuzzleSolver] Attempt ${attempt}/${maxRetries}...`);
 
     // Wait for puzzle to fully render
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 800));
 
-    // Extract image data from DOM
-    // Use screenshot of elements (always valid PNG) instead of img.src which may be stale after refresh
-    let bgBase64 = '';
-    let pieceBase64 = '';
-
-    try {
-      const bgEl = await page.$('#aliyunCaptcha-img');
-      const pieceEl = await page.$('#aliyunCaptcha-puzzle');
-
-      if (bgEl && pieceEl) {
-        const bgSS = await bgEl.screenshot({ type: 'png' });
-        const pieceSS = await pieceEl.screenshot({ type: 'png' });
-        bgBase64 = 'data:image/png;base64,' + (bgSS as Buffer).toString('base64');
-        pieceBase64 = 'data:image/png;base64,' + (pieceSS as Buffer).toString('base64');
-      }
-    } catch {}
-
-    // Fallback to img.src if screenshot fails
-    if (!bgBase64 || !pieceBase64) {
-      const srcs = await page.evaluate(() => {
-        const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
-        const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
-        return { bgSrc: bg?.src || '', pieceSrc: piece?.src || '' };
-      });
-      if (srcs.bgSrc) bgBase64 = srcs.bgSrc;
-      if (srcs.pieceSrc) pieceBase64 = srcs.pieceSrc;
-    }
-
+    // Get slider position
     const sliderInfo = await page.evaluate(() => {
       const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
       const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
@@ -219,112 +216,108 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
         sliderTop: sliderBox.top,
         sliderWidth: sliderBox.width,
         sliderHeight: sliderBox.height,
-        bodyLeft: bodyBox?.left ?? sliderBox.left,
         bodyWidth: bodyBox?.width ?? 300,
       };
     });
 
-    const imgData = bgBase64 && pieceBase64 && sliderInfo ? {
-      bgSrc: bgBase64,
-      pieceSrc: pieceBase64,
-      ...sliderInfo,
-    } : null;
-
-    if (!imgData) {
-      logStore.log('warn', 'captcha', '[PuzzleSolver] Could not extract puzzle image data');
-
-      // Check if already passed
+    if (!sliderInfo) {
       const bodyText = await page.evaluate(() => document.body.innerText || '');
       if (!bodyText.includes('Drag to complete') && !bodyText.includes('Access Verification')) {
         return { success: true, type: 'aliyun_puzzle' };
       }
-
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, 1000));
-        continue;
-      }
-      return { success: false, error: 'Could not extract puzzle data' };
+      logStore.log('warn', 'captcha', '[PuzzleSolver] Slider not found');
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1000)); continue; }
+      return { success: false, error: 'Slider not found' };
     }
 
-    // Find puzzle offset via template matching
-    // Template matching returns pixel offset in image coordinates (296px wide)
-    // Screen body width = 300px, scale accordingly
-    const imagePixelOffset = await findPuzzleOffset(imgData.bgSrc, imgData.pieceSrc);
-    const scaleRatio = imgData.bodyWidth / 296; // 300/296 ≈ 1.013
+    // Get background image from img.src (base64 PNG)
+    const bgSrc = await page.evaluate(() => {
+      const img = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
+      return img ? img.src : '';
+    });
+
+    if (!bgSrc || !bgSrc.includes('base64,')) {
+      logStore.log('warn', 'captcha', '[PuzzleSolver] Background image not available');
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1000)); continue; }
+      return { success: false, error: 'Background image not found' };
+    }
+
+    // Find puzzle hole offset using contextual darkening
+    const imagePixelOffset = await findPuzzleOffset(bgSrc, '');
+    const scaleRatio = sliderInfo.bodyWidth / 296;
     const dragDistance = Math.round(imagePixelOffset * scaleRatio);
 
-    logStore.log('info', 'captcha', `[PuzzleSolver] Image offset=${imagePixelOffset}px → screen drag=${dragDistance}px (scale=${scaleRatio.toFixed(3)})`);
+    logStore.log('info', 'captcha',
+      `[PuzzleSolver] Hole at x=${imagePixelOffset}px → drag ${dragDistance}px (scale=${scaleRatio.toFixed(3)})`
+    );
 
-     // Use JS event dispatch — Aliyun slider only responds to document-level mouse events
-     const dragOk = await page.evaluate(async (params: {
-       startLeft: number; startTop: number; sliderW: number; sliderH: number; dist: number
-     }) => {
-       const { startLeft, startTop, sliderW, sliderH, dist } = params;
-       const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
-       if (!slider) return false;
+    // Drag using JS event dispatch (Playwright mouse doesn't work on Aliyun)
+    const dragOk = await page.evaluate(async (params: {
+      startLeft: number; startTop: number; sliderW: number; sliderH: number; dist: number
+    }) => {
+      const { startLeft, startTop, sliderW, sliderH, dist } = params;
+      const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
+      if (!slider) return false;
 
-       const startX = startLeft + sliderW / 2;
-       const startY = startTop + sliderH / 2;
+      const startX = startLeft + sliderW / 2;
+      const startY = startTop + sliderH / 2;
 
-       function fire(target: EventTarget, type: string, x: number, y: number, buttons: number) {
-         target.dispatchEvent(new MouseEvent(type, {
-           bubbles: true, cancelable: true,
-           clientX: x, clientY: y,
-           screenX: x + window.screenX, screenY: y + window.screenY,
-           buttons, button: buttons === 1 ? 0 : -1,
-         }));
-       }
+      function fire(target: EventTarget, type: string, x: number, y: number, buttons: number) {
+        target.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true,
+          clientX: x, clientY: y,
+          screenX: x + window.screenX, screenY: y + window.screenY,
+          buttons, button: buttons === 1 ? 0 : -1,
+        }));
+      }
 
-       // Mousedown on both slider and document
-       fire(slider, 'mousedown', startX, startY, 1);
-       fire(document, 'mousedown', startX, startY, 1);
-       await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+      fire(slider, 'mousedown', startX, startY, 1);
+      fire(document, 'mousedown', startX, startY, 1);
+      await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
 
-       // Smooth mousemove on document (Aliyun listens here)
-       const steps = 40 + Math.floor(Math.random() * 6);
-       for (let i = 1; i <= steps; i++) {
-         const t = i / steps;
-         const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-         const nx = startX + ease * dist;
-         const jitter = (Math.random() - 0.5) * 0.6;
-         fire(document, 'mousemove', nx, startY + jitter, 1);
-         await new Promise(r => setTimeout(r, 10 + Math.random() * 8));
-       }
-       await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+      const steps = 40 + Math.floor(Math.random() * 6);
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+        const nx = startX + ease * dist;
+        const jitter = (Math.random() - 0.5) * 0.6;
+        fire(document, 'mousemove', nx, startY + jitter, 1);
+        await new Promise(r => setTimeout(r, 10 + Math.random() * 8));
+      }
+      await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
 
-       // Mouseup
-       fire(document, 'mouseup', startX + dist, startY, 0);
-       fire(slider, 'mouseup', startX + dist, startY, 0);
-       return true;
-     }, { startLeft: imgData.sliderLeft, startTop: imgData.sliderTop, sliderW: imgData.sliderWidth, sliderH: imgData.sliderHeight, dist: dragDistance });
+      fire(document, 'mouseup', startX + dist, startY, 0);
+      fire(slider, 'mouseup', startX + dist, startY, 0);
+      return true;
+    }, { startLeft: sliderInfo.sliderLeft, startTop: sliderInfo.sliderTop, sliderW: sliderInfo.sliderWidth, sliderH: sliderInfo.sliderHeight, dist: dragDistance });
 
-     if (!dragOk) {
-       logStore.log('warn', 'captcha', '[PuzzleSolver] Slider not found for JS drag');
-       if (attempt < maxRetries) continue;
-       return { success: false, error: 'Slider element not found' };
-     }
+    if (!dragOk) {
+      logStore.log('warn', 'captcha', '[PuzzleSolver] Slider JS drag failed');
+      continue;
+    }
 
-    // Wait for result
-    await new Promise((r) => setTimeout(r, 2000));
+    // Wait for captcha result
+    await new Promise((r) => setTimeout(r, 2500));
 
-    // Check result
     const resultState = await page.evaluate(() => {
       const wafBlock = document.querySelector('#waf_nc_block') as HTMLElement;
-      const display = wafBlock ? wafBlock.style.display : '';
       const bodyText = document.body.innerText || '';
       const hasPuzzle = bodyText.includes('Drag to complete') || bodyText.includes('Access Verification');
       const hasOtpInput = !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]');
-      return { wafHidden: display === 'none', hasPuzzle, hasOtpInput };
+      return {
+        wafHidden: wafBlock?.style.display === 'none',
+        hasPuzzle,
+        hasOtpInput,
+      };
     });
 
     if (resultState.wafHidden || !resultState.hasPuzzle || resultState.hasOtpInput) {
-      logStore.log('info', 'captcha', '[PuzzleSolver] Puzzle solved successfully!');
+      logStore.log('info', 'captcha', '[PuzzleSolver] Puzzle solved!');
       return { success: true, type: 'aliyun_puzzle' };
     }
 
-    logStore.log('warn', 'captcha', `[PuzzleSolver] Attempt ${attempt} failed, retrying...`);
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Attempt ${attempt} failed`);
 
-    // Try clicking refresh button if available
     try {
       const refreshBtn = await page.$('#aliyunCaptcha-btn-refresh');
       if (refreshBtn && await refreshBtn.isVisible()) {
@@ -336,6 +329,8 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
 
   return { success: false, error: 'Exceeded max puzzle solve attempts' };
 }
+
+
 
 /**
  * Check if the page contains Aliyun puzzle captcha.
