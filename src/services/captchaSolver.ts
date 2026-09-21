@@ -145,7 +145,6 @@ async function findPuzzleOffset(bgBase64: string, _pieceBase64: string): Promise
 
     for (let x = SKIP; x < W - PIECE_W - SKIP; x++) {
       const lg = colGrad[x];
-      if (lg < 3) continue; // skip weak gradients early
       for (let sep = SEP_MIN; sep <= SEP_MAX; sep++) {
         const rx = x + sep;
         if (rx >= W - SKIP) break;
@@ -155,6 +154,20 @@ async function findPuzzleOffset(bgBase64: string, _pieceBase64: string): Promise
           bestLeft = x;
         }
       }
+    }
+
+    // Fallback: if score too low, use single highest gradient peak (skip border)
+    if (bestScore < 5) {
+      let peakGrad = 0;
+      for (let x = SKIP; x < W - PIECE_W - SKIP; x++) {
+        if (colGrad[x] > peakGrad) {
+          peakGrad = colGrad[x];
+          bestLeft = x;
+        }
+      }
+      logStore.log('info', 'captcha',
+        `[PuzzleSolver] Fallback single-peak: x=${bestLeft} (grad=${peakGrad.toFixed(1)})`
+      );
     }
 
     logStore.log('info', 'captcha',
