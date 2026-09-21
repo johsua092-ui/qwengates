@@ -190,34 +190,40 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
     await new Promise((r) => setTimeout(r, 1200));
 
     // Extract image data from DOM
-    // Wait for images to fully load first
-    await page.evaluate(() => {
-      return new Promise((resolve) => {
+    // Use screenshot of elements (always valid PNG) instead of img.src which may be stale after refresh
+    let bgBase64 = '';
+    let pieceBase64 = '';
+
+    try {
+      const bgEl = await page.$('#aliyunCaptcha-img');
+      const pieceEl = await page.$('#aliyunCaptcha-puzzle');
+
+      if (bgEl && pieceEl) {
+        const bgSS = await bgEl.screenshot({ type: 'png' });
+        const pieceSS = await pieceEl.screenshot({ type: 'png' });
+        bgBase64 = 'data:image/png;base64,' + (bgSS as Buffer).toString('base64');
+        pieceBase64 = 'data:image/png;base64,' + (pieceSS as Buffer).toString('base64');
+      }
+    } catch {}
+
+    // Fallback to img.src if screenshot fails
+    if (!bgBase64 || !pieceBase64) {
+      const srcs = await page.evaluate(() => {
         const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
         const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
-        if (!bg || !piece) { resolve(false); return; }
-        if (bg.complete && piece.complete) { resolve(true); return; }
-        let loaded = 0;
-        const done = () => { loaded++; if (loaded >= 2) resolve(true); };
-        bg.onload = done; piece.onload = done;
-        setTimeout(() => resolve(false), 3000);
+        return { bgSrc: bg?.src || '', pieceSrc: piece?.src || '' };
       });
-    });
+      if (srcs.bgSrc) bgBase64 = srcs.bgSrc;
+      if (srcs.pieceSrc) pieceBase64 = srcs.pieceSrc;
+    }
 
-    const imgData = await page.evaluate(() => {
-      const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
-      const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
+    const sliderInfo = await page.evaluate(() => {
       const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
       const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
-
-      if (!bg || !piece || !slider) return null;
-
+      if (!slider) return null;
       const sliderBox = slider.getBoundingClientRect();
       const bodyBox = body ? body.getBoundingClientRect() : null;
-
       return {
-        bgSrc: bg.src,
-        pieceSrc: piece.src,
         sliderLeft: sliderBox.left,
         sliderTop: sliderBox.top,
         sliderWidth: sliderBox.width,
@@ -226,6 +232,12 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
         bodyWidth: bodyBox?.width ?? 300,
       };
     });
+
+    const imgData = bgBase64 && pieceBase64 && sliderInfo ? {
+      bgSrc: bgBase64,
+      pieceSrc: pieceBase64,
+      ...sliderInfo,
+    } : null;
 
     if (!imgData) {
       logStore.log('warn', 'captcha', '[PuzzleSolver] Could not extract puzzle image data');
@@ -244,11 +256,15 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
     }
 
     // Find puzzle offset via template matching
-    const dragDistance = await findPuzzleOffset(imgData.bgSrc, imgData.pieceSrc);
+    // Template matching returns pixel offset in image coordinates (296px wide)
+    // Screen body width = 300px, scale accordingly
+    const imagePixelOffset = await findPuzzleOffset(imgData.bgSrc, imgData.pieceSrc);
+    const scaleRatio = imgData.bodyWidth / 296; // 300/296 ≈ 1.013
+    const dragDistance = Math.round(imagePixelOffset * scaleRatio);
 
-    logStore.log('info', 'captcha', `[PuzzleSolver] Dragging slider ${dragDistance}px`);
+    logStore.log('info', 'captcha', `[PuzzleSolver] Image offset=${imagePixelOffset}px → screen drag=${dragDistance}px (scale=${scaleRatio.toFixed(3)})`);
 
-    // Start position: center of slider button
+    // Start position: center of slider button (slider starts at x=bodyLeft)
     const startX = imgData.sliderLeft + imgData.sliderWidth / 2;
     const startY = imgData.sliderTop + imgData.sliderHeight / 2;
 
