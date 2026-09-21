@@ -97,79 +97,70 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
 }
 
 /**
- * Template matching — improved dual-method approach.
- * Method 1: Darkest strip scan (hole appears dark in background).
- * Method 2: Cross-correlation between piece profile and background columns.
+ * Template matching — improved approach for Aliyun puzzle captcha.
+ *
+ * The hole in the background image has two characteristics:
+ * 1. **Low variance**: The hole interior is uniform (consistent dark or shadowed pixels)
+ * 2. **Low brightness**: The hole appears darker than surrounding scenery
+ *
+ * We combine both metrics, with priority given to the LOW VARIANCE method
+ * (most reliable for finding the flat/uniform interior of the cutout hole).
  */
 async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<number> {
   try {
     const sharp = await import('sharp');
 
     const bgBuffer = Buffer.from(bgBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
-    const pieceBuffer = Buffer.from(pieceBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
-
-    // Decode both images into RGBA raw pixels
     const bgRaw = await sharp.default(bgBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const pieceRaw = await sharp.default(pieceBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 
     const bgW = bgRaw.info.width;
     const bgH = bgRaw.info.height;
-    const pieceW = pieceRaw.info.width;
     const bgPixels = bgRaw.data as Buffer;
-    const piecePixels = pieceRaw.data as Buffer;
 
+    // Scan range: skip 20px border on each side to avoid edge shadows
+    const SKIP = 20;
     const scanH = Math.min(bgH, 200);
-    const pieceWidthApprox = Math.min(pieceW, 60);
+    const pieceW = 52; // known piece width
 
-    // Method 1: Darkest column strip (hole appears dark in background)
-    let minBrightness = Infinity;
-    let darkBestX = Math.floor(bgW / 3);
+    // Method 1: Lowest column variance (hole interior is most uniform)
+    let minVariance = Infinity;
+    let varBestX = SKIP;
 
-    for (let x = 10; x < bgW - pieceWidthApprox - 10; x++) {
-      let totalBrightness = 0;
-      for (let y = Math.floor(scanH * 0.2); y < Math.floor(scanH * 0.8); y++) {
+    for (let x = SKIP; x < bgW - pieceW - SKIP; x++) {
+      const grays: number[] = [];
+      for (let y = Math.floor(scanH * 0.15); y < Math.floor(scanH * 0.85); y++) {
         const idx = (y * bgW + x) * 4;
-        totalBrightness += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
+        grays.push((bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3);
       }
-      if (totalBrightness < minBrightness) {
-        minBrightness = totalBrightness;
+      const mean = grays.reduce((a, b) => a + b, 0) / grays.length;
+      const variance = grays.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / grays.length;
+      if (variance < minVariance) {
+        minVariance = variance;
+        varBestX = x;
+      }
+    }
+
+    // Method 2: Darkest strip (skip edge columns, scan middle portion)
+    let minBrightness = Infinity;
+    let darkBestX = SKIP;
+
+    for (let x = SKIP; x < bgW - pieceW - SKIP; x++) {
+      let total = 0;
+      for (let y = Math.floor(scanH * 0.15); y < Math.floor(scanH * 0.85); y++) {
+        const idx = (y * bgW + x) * 4;
+        total += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
+      }
+      if (total < minBrightness) {
+        minBrightness = total;
         darkBestX = x;
       }
     }
 
-    // Method 2: Cross-correlation — piece center-column vs background columns
-    const midCol = Math.floor(pieceW / 2);
-    const pieceProfile: number[] = [];
-    for (let y = 0; y < scanH; y++) {
-      const pi = (y * pieceW + midCol) * 4;
-      const alpha = piecePixels[pi + 3];
-      pieceProfile.push(alpha < 128 ? -1 : (piecePixels[pi] + piecePixels[pi + 1] + piecePixels[pi + 2]) / 3);
-    }
-
-    let minCorrel = Infinity;
-    let correlBestX = darkBestX;
-
-    for (let x = 10; x < bgW - pieceWidthApprox - 10; x++) {
-      let score = 0;
-      let count = 0;
-      for (let y = 0; y < scanH; y++) {
-        if (pieceProfile[y] < 0) continue;
-        const bi = (y * bgW + x) * 4;
-        const bgGray = (bgPixels[bi] + bgPixels[bi + 1] + bgPixels[bi + 2]) / 3;
-        score += Math.abs(bgGray - pieceProfile[y]);
-        count++;
-      }
-      if (count > 0 && score / count < minCorrel) {
-        minCorrel = score / count;
-        correlBestX = x;
-      }
-    }
-
-    // Weight: 60% correlation + 40% darkness
-    const finalX = Math.round(correlBestX * 0.6 + darkBestX * 0.4);
+    // Variance method is more reliable — weight it 70%
+    const finalX = Math.round(varBestX * 0.7 + darkBestX * 0.3);
 
     logStore.log('info', 'captcha',
-      `[PuzzleSolver] Darkness x=${darkBestX}, Correlation x=${correlBestX}, Final x=${finalX}`
+      `[PuzzleSolver] Variance x=${varBestX}(${minVariance.toFixed(0)}), Darkness x=${darkBestX}, Final x=${finalX}`
     );
     return finalX;
   } catch (err: any) {
