@@ -299,17 +299,27 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
     // Wait for captcha result
     await new Promise((r) => setTimeout(r, 2500));
 
-    const resultState = await page.evaluate(() => {
-      const wafBlock = document.querySelector('#waf_nc_block') as HTMLElement;
-      const bodyText = document.body.innerText || '';
-      const hasPuzzle = bodyText.includes('Drag to complete') || bodyText.includes('Access Verification');
-      const hasOtpInput = !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]');
-      return {
-        wafHidden: wafBlock?.style.display === 'none',
-        hasPuzzle,
-        hasOtpInput,
-      };
-    });
+    let resultState: { wafHidden: boolean; hasPuzzle: boolean; hasOtpInput: boolean };
+    try {
+      resultState = await page.evaluate(() => {
+        const wafBlock = document.querySelector('#waf_nc_block') as HTMLElement;
+        const bodyText = document.body.innerText || '';
+        const hasPuzzle = bodyText.includes('Drag to complete') || bodyText.includes('Access Verification');
+        const hasOtpInput = !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]');
+        return {
+          wafHidden: wafBlock?.style.display === 'none',
+          hasPuzzle,
+          hasOtpInput,
+        };
+      });
+    } catch (err: any) {
+      // Page navigated after successful solve
+      if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
+        logStore.log('info', 'captcha', '[PuzzleSolver] Page navigated — solve succeeded!');
+        return { success: true, type: 'aliyun_puzzle' };
+      }
+      throw err;
+    }
 
     if (resultState.wafHidden || !resultState.hasPuzzle || resultState.hasOtpInput) {
       logStore.log('info', 'captcha', '[PuzzleSolver] Puzzle solved!');
@@ -539,7 +549,16 @@ export async function solveCaptcha(page: any): Promise<SolveResult> {
     const isPuzzle = await detectAliyunPuzzle(page);
     if (isPuzzle) {
       logStore.log('info', 'captcha', 'Detected Aliyun WAF puzzle captcha, solving with image matching...');
-      return await solveAliyunPuzzle(page);
+      try {
+        return await solveAliyunPuzzle(page);
+      } catch (err: any) {
+        // Navigation after successful solve causes context destruction — treat as success
+        if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
+          logStore.log('info', 'captcha', '[PuzzleSolver] Page navigated after solve — treating as success');
+          return { success: true, type: 'aliyun_puzzle' };
+        }
+        throw err;
+      }
     }
 
     // 2. Check for standard Aliyun NoCaptcha slider
