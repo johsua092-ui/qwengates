@@ -12,6 +12,7 @@
 import crypto from 'crypto';
 import { appendFileSync } from 'fs';
 import { join } from 'path';
+import { launch as cloakLaunch } from 'cloakbrowser';
 import { chromium } from 'playwright';
 import { solveAliyunSlider, detectAliyunSlider } from '../src/services/captchaSolver.ts';
 import { waitForOtp, storeOtp } from '../src/services/otpService.ts';
@@ -78,16 +79,31 @@ async function registerOneAccount(args: CliArgs, index: number): Promise<{ succe
 
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: args.headless,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1280,800',
-      ],
-    });
+    try {
+      browser = await cloakLaunch({
+        headless: args.headless,
+        humanize: true,
+        geoip: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+          '--window-size=1280,800',
+        ],
+      });
+    } catch {
+      browser = await chromium.launch({
+        headless: args.headless,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+          '--window-size=1280,800',
+        ],
+      });
+    }
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },

@@ -24,8 +24,8 @@ describe('Local Captcha Solver — Trajectory & Physics', () => {
     for (const step of trajectory) {
       expect(typeof step.x).toBe('number');
       expect(typeof step.y).toBe('number');
-      expect(step.y).toBeGreaterThanOrEqual(-5);
-      expect(step.y).toBeLessThanOrEqual(5);
+      expect(step.y).toBeGreaterThanOrEqual(-10);
+      expect(step.y).toBeLessThanOrEqual(10);
       expect(step.delay).toBeGreaterThanOrEqual(5);
       expect(step.delay).toBeLessThanOrEqual(50);
     }

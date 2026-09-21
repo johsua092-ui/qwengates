@@ -72,8 +72,13 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
     const targetStepX = Math.round(ease * targetWithOvershoot);
     const dx = targetStepX - curX;
 
-    // Small vertical human tremor (-1, 0, 1 px)
-    const dy = i % 4 === 0 ? (Math.random() > 0.5 ? 1 : -1) : 0;
+    // Small vertical human tremor (-1, 0, 1 px) with center-seeking damping
+    let dy = 0;
+    if (i % 4 === 0) {
+      if (curY > 2) dy = -1;
+      else if (curY < -2) dy = 1;
+      else dy = Math.random() > 0.5 ? 1 : -1;
+    }
 
     curX += dx;
     curY += dy;
