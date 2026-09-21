@@ -97,13 +97,9 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
 }
 
 /**
- * Template matching using pure pixel comparison (no OpenCV needed).
- * Finds the horizontal position of the puzzle piece hole in the background.
- *
- * Algorithm:
- * - The puzzle piece (52×200) represents a "cutout" from the background.
- * - The hole in the background is darker/different than surrounding pixels.
- * - We scan horizontally comparing edge gradient columns to find where piece fits.
+ * Template matching — improved dual-method approach.
+ * Method 1: Darkest strip scan (hole appears dark in background).
+ * Method 2: Cross-correlation between piece profile and background columns.
  */
 async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<number> {
   try {
@@ -112,60 +108,73 @@ async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<
     const bgBuffer = Buffer.from(bgBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
     const pieceBuffer = Buffer.from(pieceBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
 
-    // Get raw RGBA pixel data
+    // Decode both images into RGBA raw pixels
     const bgRaw = await sharp.default(bgBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const pieceRaw = await sharp.default(pieceBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 
     const bgW = bgRaw.info.width;
     const bgH = bgRaw.info.height;
     const pieceW = pieceRaw.info.width;
-    const pieceH = pieceRaw.info.height;
-    const bgPixels = bgRaw.data;
-    const piecePixels = pieceRaw.data;
+    const bgPixels = bgRaw.data as Buffer;
+    const piecePixels = pieceRaw.data as Buffer;
 
-    /**
-     * The hole in the background appears as unusually dark or uniform-colored region.
-     * We detect it by computing column-wise variance: low variance = hole candidate.
-     * The piece width is ~52px. We scan from x=10 to x=(bgW-pieceW-10).
-     */
-    const scanHeight = Math.min(bgH, pieceH, 200);
-    let bestX = Math.floor(bgW / 3); // fallback: 1/3 of track width
-    let minScore = Infinity;
+    const scanH = Math.min(bgH, 200);
+    const pieceWidthApprox = Math.min(pieceW, 60);
 
-    // Compare piece edges against background columns
-    const pieceEdge: number[] = [];
-    for (let y = 0; y < scanHeight; y++) {
-      // Left edge pixel of piece (column 1, ignoring alpha)
-      const pi = (y * pieceW + 1) * 4;
-      const pr = piecePixels[pi];
-      const pg = piecePixels[pi + 1];
-      const pb = piecePixels[pi + 2];
-      pieceEdge.push((pr + pg + pb) / 3);
+    // Method 1: Darkest column strip (hole appears dark in background)
+    let minBrightness = Infinity;
+    let darkBestX = Math.floor(bgW / 3);
+
+    for (let x = 10; x < bgW - pieceWidthApprox - 10; x++) {
+      let totalBrightness = 0;
+      for (let y = Math.floor(scanH * 0.2); y < Math.floor(scanH * 0.8); y++) {
+        const idx = (y * bgW + x) * 4;
+        totalBrightness += (bgPixels[idx] + bgPixels[idx + 1] + bgPixels[idx + 2]) / 3;
+      }
+      if (totalBrightness < minBrightness) {
+        minBrightness = totalBrightness;
+        darkBestX = x;
+      }
     }
 
-    // Slide the piece across the background, compute match score
-    for (let x = 10; x < bgW - pieceW - 10; x++) {
+    // Method 2: Cross-correlation — piece center-column vs background columns
+    const midCol = Math.floor(pieceW / 2);
+    const pieceProfile: number[] = [];
+    for (let y = 0; y < scanH; y++) {
+      const pi = (y * pieceW + midCol) * 4;
+      const alpha = piecePixels[pi + 3];
+      pieceProfile.push(alpha < 128 ? -1 : (piecePixels[pi] + piecePixels[pi + 1] + piecePixels[pi + 2]) / 3);
+    }
+
+    let minCorrel = Infinity;
+    let correlBestX = darkBestX;
+
+    for (let x = 10; x < bgW - pieceWidthApprox - 10; x++) {
       let score = 0;
-      for (let y = 0; y < scanHeight; y++) {
+      let count = 0;
+      for (let y = 0; y < scanH; y++) {
+        if (pieceProfile[y] < 0) continue;
         const bi = (y * bgW + x) * 4;
-        const br = bgPixels[bi];
-        const bg = bgPixels[bi + 1];
-        const bb = bgPixels[bi + 2];
-        const bgGray = (br + bg + bb) / 3;
-        const diff = Math.abs(bgGray - pieceEdge[y]);
-        score += diff;
+        const bgGray = (bgPixels[bi] + bgPixels[bi + 1] + bgPixels[bi + 2]) / 3;
+        score += Math.abs(bgGray - pieceProfile[y]);
+        count++;
       }
-      if (score < minScore) {
-        minScore = score;
-        bestX = x;
+      if (count > 0 && score / count < minCorrel) {
+        minCorrel = score / count;
+        correlBestX = x;
       }
     }
 
-    logStore.log('info', 'captcha', `[PuzzleSolver] Best offset found: x=${bestX}, score=${minScore.toFixed(1)}`);
-    return bestX;
+    // Weight: 60% correlation + 40% darkness
+    const finalX = Math.round(correlBestX * 0.6 + darkBestX * 0.4);
+
+    logStore.log('info', 'captcha',
+      `[PuzzleSolver] Darkness x=${darkBestX}, Correlation x=${correlBestX}, Final x=${finalX}`
+    );
+    return finalX;
   } catch (err: any) {
     logStore.log('warn', 'captcha', `[PuzzleSolver] Template matching failed: ${err.message}, using fallback`);
-    return 180; // fallback: ~2/3 of 300px track
+    return 180;
   }
 }
 
@@ -181,6 +190,20 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
     await new Promise((r) => setTimeout(r, 1200));
 
     // Extract image data from DOM
+    // Wait for images to fully load first
+    await page.evaluate(() => {
+      return new Promise((resolve) => {
+        const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
+        const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
+        if (!bg || !piece) { resolve(false); return; }
+        if (bg.complete && piece.complete) { resolve(true); return; }
+        let loaded = 0;
+        const done = () => { loaded++; if (loaded >= 2) resolve(true); };
+        bg.onload = done; piece.onload = done;
+        setTimeout(() => resolve(false), 3000);
+      });
+    });
+
     const imgData = await page.evaluate(() => {
       const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
       const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
