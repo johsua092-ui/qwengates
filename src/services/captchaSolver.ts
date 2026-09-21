@@ -11,7 +11,7 @@ export interface CaptchaSolverConfig {
 export interface SolveResult {
   success: boolean;
   token?: string;
-  type?: 'aliyun_slider' | 'hcaptcha' | 'recaptcha_v2' | 'recaptcha_v3';
+  type?: 'aliyun_slider' | 'aliyun_puzzle' | 'hcaptcha' | 'recaptcha_v2' | 'recaptcha_v3';
   error?: string;
 }
 
@@ -34,15 +34,11 @@ export const ALIYUN_SLIDER_SELECTORS = [
   '[id*="baxia-dialog"]',
   'iframe[src*="baxia"]',
   'iframe[src*="awsc"]',
-];
-
-const ALIYUN_BUTTON_SELECTORS = [
-  '#nc_1_n1z',
-  '.btn_slide',
-  '.nc_iconfont.btn_slide',
-  'span[id*="_n1z"]',
-  '#nocaptcha .btn_slide',
-  '[class*="btn_slide"]',
+  // Aliyun puzzle captcha selectors
+  '#aliyunCaptcha-sliding-slider',
+  '#aliyunCaptcha-window-embed',
+  '#aliyunCaptcha-img-box',
+  '#waf_nc_block',
 ];
 
 export function getCaptchaConfig(): CaptchaSolverConfig | null {
@@ -98,6 +94,203 @@ export function generateHumanTrajectory(distance: number): TrajectoryStep[] {
   }
 
   return steps;
+}
+
+/**
+ * Template matching using pure pixel comparison (no OpenCV needed).
+ * Finds the horizontal position of the puzzle piece hole in the background.
+ *
+ * Algorithm:
+ * - The puzzle piece (52×200) represents a "cutout" from the background.
+ * - The hole in the background is darker/different than surrounding pixels.
+ * - We scan horizontally comparing edge gradient columns to find where piece fits.
+ */
+async function findPuzzleOffset(bgBase64: string, pieceBase64: string): Promise<number> {
+  try {
+    const sharp = await import('sharp');
+
+    const bgBuffer = Buffer.from(bgBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
+    const pieceBuffer = Buffer.from(pieceBase64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
+
+    // Get raw RGBA pixel data
+    const bgRaw = await sharp.default(bgBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pieceRaw = await sharp.default(pieceBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+
+    const bgW = bgRaw.info.width;
+    const bgH = bgRaw.info.height;
+    const pieceW = pieceRaw.info.width;
+    const pieceH = pieceRaw.info.height;
+    const bgPixels = bgRaw.data;
+    const piecePixels = pieceRaw.data;
+
+    /**
+     * The hole in the background appears as unusually dark or uniform-colored region.
+     * We detect it by computing column-wise variance: low variance = hole candidate.
+     * The piece width is ~52px. We scan from x=10 to x=(bgW-pieceW-10).
+     */
+    const scanHeight = Math.min(bgH, pieceH, 200);
+    let bestX = Math.floor(bgW / 3); // fallback: 1/3 of track width
+    let minScore = Infinity;
+
+    // Compare piece edges against background columns
+    const pieceEdge: number[] = [];
+    for (let y = 0; y < scanHeight; y++) {
+      // Left edge pixel of piece (column 1, ignoring alpha)
+      const pi = (y * pieceW + 1) * 4;
+      const pr = piecePixels[pi];
+      const pg = piecePixels[pi + 1];
+      const pb = piecePixels[pi + 2];
+      pieceEdge.push((pr + pg + pb) / 3);
+    }
+
+    // Slide the piece across the background, compute match score
+    for (let x = 10; x < bgW - pieceW - 10; x++) {
+      let score = 0;
+      for (let y = 0; y < scanHeight; y++) {
+        const bi = (y * bgW + x) * 4;
+        const br = bgPixels[bi];
+        const bg = bgPixels[bi + 1];
+        const bb = bgPixels[bi + 2];
+        const bgGray = (br + bg + bb) / 3;
+        const diff = Math.abs(bgGray - pieceEdge[y]);
+        score += diff;
+      }
+      if (score < minScore) {
+        minScore = score;
+        bestX = x;
+      }
+    }
+
+    logStore.log('info', 'captcha', `[PuzzleSolver] Best offset found: x=${bestX}, score=${minScore.toFixed(1)}`);
+    return bestX;
+  } catch (err: any) {
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Template matching failed: ${err.message}, using fallback`);
+    return 180; // fallback: ~2/3 of 300px track
+  }
+}
+
+/**
+ * Solve Aliyun puzzle captcha (the "Drag to complete the puzzle" type).
+ * This appears after form submission as WAF challenge.
+ */
+async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    logStore.log('info', 'captcha', `[PuzzleSolver] Attempt ${attempt}/${maxRetries}...`);
+
+    // Wait for puzzle to fully render
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // Extract image data from DOM
+    const imgData = await page.evaluate(() => {
+      const bg = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
+      const piece = document.querySelector('#aliyunCaptcha-puzzle') as HTMLImageElement;
+      const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
+      const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
+
+      if (!bg || !piece || !slider) return null;
+
+      const sliderBox = slider.getBoundingClientRect();
+      const bodyBox = body ? body.getBoundingClientRect() : null;
+
+      return {
+        bgSrc: bg.src,
+        pieceSrc: piece.src,
+        sliderLeft: sliderBox.left,
+        sliderTop: sliderBox.top,
+        sliderWidth: sliderBox.width,
+        sliderHeight: sliderBox.height,
+        bodyLeft: bodyBox?.left ?? sliderBox.left,
+        bodyWidth: bodyBox?.width ?? 300,
+      };
+    });
+
+    if (!imgData) {
+      logStore.log('warn', 'captcha', '[PuzzleSolver] Could not extract puzzle image data');
+
+      // Check if already passed
+      const bodyText = await page.evaluate(() => document.body.innerText || '');
+      if (!bodyText.includes('Drag to complete') && !bodyText.includes('Access Verification')) {
+        return { success: true, type: 'aliyun_puzzle' };
+      }
+
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      return { success: false, error: 'Could not extract puzzle data' };
+    }
+
+    // Find puzzle offset via template matching
+    const dragDistance = await findPuzzleOffset(imgData.bgSrc, imgData.pieceSrc);
+
+    logStore.log('info', 'captcha', `[PuzzleSolver] Dragging slider ${dragDistance}px`);
+
+    // Start position: center of slider button
+    const startX = imgData.sliderLeft + imgData.sliderWidth / 2;
+    const startY = imgData.sliderTop + imgData.sliderHeight / 2;
+
+    // Smooth drag with human trajectory
+    await page.mouse.move(startX, startY);
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 150) + 100));
+    await page.mouse.down();
+
+    const trajectory = generateHumanTrajectory(dragDistance);
+    for (const step of trajectory) {
+      await page.mouse.move(startX + step.x, startY + step.y);
+      await new Promise((r) => setTimeout(r, step.delay));
+    }
+
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 100) + 80));
+    await page.mouse.up();
+
+    // Wait for result
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Check result
+    const resultState = await page.evaluate(() => {
+      const wafBlock = document.querySelector('#waf_nc_block') as HTMLElement;
+      const display = wafBlock ? wafBlock.style.display : '';
+      const bodyText = document.body.innerText || '';
+      const hasPuzzle = bodyText.includes('Drag to complete') || bodyText.includes('Access Verification');
+      const hasOtpInput = !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]');
+      return { wafHidden: display === 'none', hasPuzzle, hasOtpInput };
+    });
+
+    if (resultState.wafHidden || !resultState.hasPuzzle || resultState.hasOtpInput) {
+      logStore.log('info', 'captcha', '[PuzzleSolver] Puzzle solved successfully!');
+      return { success: true, type: 'aliyun_puzzle' };
+    }
+
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Attempt ${attempt} failed, retrying...`);
+
+    // Try clicking refresh button if available
+    try {
+      const refreshBtn = await page.$('#aliyunCaptcha-btn-refresh');
+      if (refreshBtn && await refreshBtn.isVisible()) {
+        await refreshBtn.click();
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    } catch {}
+  }
+
+  return { success: false, error: 'Exceeded max puzzle solve attempts' };
+}
+
+/**
+ * Check if the page contains Aliyun puzzle captcha.
+ */
+async function detectAliyunPuzzle(page: any): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      return !!(
+        document.querySelector('#aliyunCaptcha-sliding-slider') ||
+        document.querySelector('#aliyunCaptcha-img-box') ||
+        document.querySelector('#waf_nc_block')
+      );
+    });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -163,9 +356,18 @@ export async function checkAliyunSolved(page: any, targetFrame?: any): Promise<b
 }
 
 /**
- * Solve Aliyun / AWSC slider locally without 3rd party services.
+ * Solve Aliyun / AWSC NoCaptcha slider locally without 3rd party services.
  */
 export async function solveAliyunSlider(page: any, maxRetries = 3): Promise<SolveResult> {
+  const ALIYUN_BUTTON_SELECTORS = [
+    '#nc_1_n1z',
+    '.btn_slide',
+    '.nc_iconfont.btn_slide',
+    'span[id*="_n1z"]',
+    '#nocaptcha .btn_slide',
+    '[class*="btn_slide"]',
+  ];
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     logStore.log('info', 'captcha', `[AliyunSolver] Attempt ${attempt}/${maxRetries} to solve local slider...`);
 
@@ -271,19 +473,27 @@ export async function solveAliyunSlider(page: any, maxRetries = 3): Promise<Solv
 
 /**
  * Master captcha solver.
- * 1. Checks and solves Aliyun slider locally (0 external dependencies, no Capsolver).
- * 2. Falls back to Capsolver for hCaptcha / reCaptcha if configured.
+ * 1. Checks Aliyun puzzle (WAF challenge) — solves with image matching.
+ * 2. Checks Aliyun NoCaptcha slider — solves with drag physics.
+ * 3. Falls back to Capsolver for hCaptcha / reCaptcha if configured.
  */
 export async function solveCaptcha(page: any): Promise<SolveResult> {
   try {
-    // 1. Check for Aliyun slider first (pure local solution)
+    // 1. Check for Aliyun puzzle captcha (WAF, post-submit challenge)
+    const isPuzzle = await detectAliyunPuzzle(page);
+    if (isPuzzle) {
+      logStore.log('info', 'captcha', 'Detected Aliyun WAF puzzle captcha, solving with image matching...');
+      return await solveAliyunPuzzle(page);
+    }
+
+    // 2. Check for standard Aliyun NoCaptcha slider
     const isAliyun = await detectAliyunSlider(page);
     if (isAliyun) {
       logStore.log('info', 'captcha', 'Detected Aliyun/AWSC slider captcha, solving locally...');
       return await solveAliyunSlider(page);
     }
 
-    // 2. External captchas (hCaptcha, reCaptcha) require Capsolver
+    // 3. External captchas (hCaptcha, reCaptcha) require Capsolver
     const cfg = getCaptchaConfig();
     if (!cfg) {
       logStore.log('warn', 'captcha', 'Non-Aliyun captcha detected but no CAPSOLVER_API_KEY configured');
