@@ -255,23 +255,54 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
 
     logStore.log('info', 'captcha', `[PuzzleSolver] Image offset=${imagePixelOffset}px → screen drag=${dragDistance}px (scale=${scaleRatio.toFixed(3)})`);
 
-    // Start position: center of slider button (slider starts at x=bodyLeft)
-    const startX = imgData.sliderLeft + imgData.sliderWidth / 2;
-    const startY = imgData.sliderTop + imgData.sliderHeight / 2;
+     // Use JS event dispatch — Aliyun slider only responds to document-level mouse events
+     const dragOk = await page.evaluate(async (params: {
+       startLeft: number; startTop: number; sliderW: number; sliderH: number; dist: number
+     }) => {
+       const { startLeft, startTop, sliderW, sliderH, dist } = params;
+       const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
+       if (!slider) return false;
 
-    // Smooth drag with human trajectory
-    await page.mouse.move(startX, startY);
-    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 150) + 100));
-    await page.mouse.down();
+       const startX = startLeft + sliderW / 2;
+       const startY = startTop + sliderH / 2;
 
-    const trajectory = generateHumanTrajectory(dragDistance);
-    for (const step of trajectory) {
-      await page.mouse.move(startX + step.x, startY + step.y);
-      await new Promise((r) => setTimeout(r, step.delay));
-    }
+       function fire(target: EventTarget, type: string, x: number, y: number, buttons: number) {
+         target.dispatchEvent(new MouseEvent(type, {
+           bubbles: true, cancelable: true,
+           clientX: x, clientY: y,
+           screenX: x + window.screenX, screenY: y + window.screenY,
+           buttons, button: buttons === 1 ? 0 : -1,
+         }));
+       }
 
-    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 100) + 80));
-    await page.mouse.up();
+       // Mousedown on both slider and document
+       fire(slider, 'mousedown', startX, startY, 1);
+       fire(document, 'mousedown', startX, startY, 1);
+       await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+
+       // Smooth mousemove on document (Aliyun listens here)
+       const steps = 40 + Math.floor(Math.random() * 6);
+       for (let i = 1; i <= steps; i++) {
+         const t = i / steps;
+         const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+         const nx = startX + ease * dist;
+         const jitter = (Math.random() - 0.5) * 0.6;
+         fire(document, 'mousemove', nx, startY + jitter, 1);
+         await new Promise(r => setTimeout(r, 10 + Math.random() * 8));
+       }
+       await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+
+       // Mouseup
+       fire(document, 'mouseup', startX + dist, startY, 0);
+       fire(slider, 'mouseup', startX + dist, startY, 0);
+       return true;
+     }, { startLeft: imgData.sliderLeft, startTop: imgData.sliderTop, sliderW: imgData.sliderWidth, sliderH: imgData.sliderHeight, dist: dragDistance });
+
+     if (!dragOk) {
+       logStore.log('warn', 'captcha', '[PuzzleSolver] Slider not found for JS drag');
+       if (attempt < maxRetries) continue;
+       return { success: false, error: 'Slider element not found' };
+     }
 
     // Wait for result
     await new Promise((r) => setTimeout(r, 2000));
