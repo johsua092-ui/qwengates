@@ -111,12 +111,21 @@ async function detectCaptcha(page: any): Promise<boolean> {
     return !!(
       document.querySelector('iframe[src*="recaptcha"]') ||
       document.querySelector('iframe[src*="captcha"]') ||
+      document.querySelector('iframe[src*="baxia"]') ||
+      document.querySelector('iframe[src*="awsc"]') ||
+      document.querySelector('#nc_1_wrapper') ||
+      document.querySelector('#nc_1_n1z') ||
+      document.querySelector('.btn_slide') ||
+      document.querySelector('.nc_scale') ||
+      document.querySelector('#nocaptcha') ||
       document.querySelector('[class*="captcha"]') ||
       document.querySelector('[id*="captcha"]') ||
+      document.querySelector('[class*="baxia"]') ||
+      document.querySelector('[id*="baxia"]') ||
       document.querySelector('.captcha-container') ||
       document.querySelector('[data-sitekey]') ||
       document.querySelector('.g-recaptcha') ||
-      Array.from(document.querySelectorAll('iframe')).some((f) => /challenge|verify|captcha|recaptcha/i.test(f.src || ''))
+      Array.from(document.querySelectorAll('iframe')).some((f) => /challenge|verify|captcha|recaptcha|baxia|awsc/i.test(f.src || ''))
     );
   });
 }
@@ -150,17 +159,15 @@ async function tryCheckCaptcha(page: any, context: any, attempt: number): Promis
   try {
     const hasCaptcha = await detectCaptcha(page);
     if (!hasCaptcha) return null;
-    
-    const { getCaptchaConfig, solveCaptcha } = await import('./captchaSolver.ts');
-    const captchaConfig = getCaptchaConfig();
-    if (captchaConfig) {
-      logStore.log('info', 'browser', 'Attempting auto-captcha solve via Capsolver...');
-      const solveResult = await solveCaptcha(page);
-      if (solveResult.success) {
-        return null; // Continue polling
-      } else {
-        logStore.log('warn', 'browser', 'Auto-captcha solve failed, falling back to manual.');
-      }
+
+    const { solveCaptcha } = await import('./captchaSolver.ts');
+    logStore.log('info', 'browser', 'Attempting auto-captcha solve...');
+    const solveResult = await solveCaptcha(page);
+    if (solveResult.success) {
+      logStore.log('info', 'browser', `Auto-captcha solved successfully (${solveResult.type || 'local'}), continuing token poll...`);
+      return null; // Continue polling
+    } else {
+      logStore.log('warn', 'browser', `Auto-captcha solve failed (${solveResult.error}), falling back to manual.`);
     }
 
     return 'captcha';

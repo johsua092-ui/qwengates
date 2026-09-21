@@ -12,6 +12,7 @@ import { configRouter } from './routes/config.ts';
 import { registerDashboardRoutes } from './routes/dashboard/dashboardRoutes.ts';
 import { debugNetworkApp } from './routes/debugNetwork.ts';
 import { tempEmailRouter } from './routes/tempEmail.ts';
+import { otpRouter } from './routes/otp.ts';
 import { apiKeyStoreCount, authenticateApiKey, extractBearerToken } from './services/apiKeyStore.ts';
 import { getAccountCount, getAccountStats, getAccounts, getAvailableCount, initAuth, setStartupStatus } from './services/auth.ts';
 import { closeScreencast, handleInputEvent, startScreencast } from './services/cdpScreencast.ts';
@@ -194,6 +195,7 @@ app.use('/api/accounts*', async (c, next) => {
 });
 app.route('/api/accounts', accountsRouter);
 app.route('/api/temp-email', tempEmailRouter);
+app.route('/api/otp', otpRouter);
 
 // Usage stats API — per-account × per-model daily counters (protected)
 app.use('/api/usage*', async (c, next) => {
