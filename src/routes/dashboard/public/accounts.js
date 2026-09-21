@@ -685,6 +685,63 @@ function init() {
     this.reset();
   });
 
+  /* Single / Bulk tab toggle */
+  var tabSingle = document.getElementById('tabSingleBtn');
+  var tabBulk = document.getElementById('tabBulkBtn');
+  var addForm = document.getElementById('addForm');
+  var bulkForm = document.getElementById('bulkForm');
+
+  if (tabSingle && tabBulk && addForm && bulkForm) {
+    tabSingle.addEventListener('click', function () {
+      tabSingle.style.background = 'var(--accent)';
+      tabSingle.style.color = '#fff';
+      tabBulk.style.background = 'var(--bg-elevated)';
+      tabBulk.style.color = 'var(--text-secondary)';
+      addForm.style.display = 'flex';
+      bulkForm.style.display = 'none';
+    });
+    tabBulk.addEventListener('click', function () {
+      tabBulk.style.background = 'var(--accent)';
+      tabBulk.style.color = '#fff';
+      tabSingle.style.background = 'var(--bg-elevated)';
+      tabSingle.style.color = 'var(--text-secondary)';
+      addForm.style.display = 'none';
+      bulkForm.style.display = 'flex';
+    });
+  }
+
+  /* Bulk form submit */
+  if (bulkForm) {
+    bulkForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var raw = document.getElementById('bulkInput').value.trim();
+      if (!raw) {
+        showToast('Please enter accounts to import', 'error');
+        return;
+      }
+      var btn = document.getElementById('bulkBtn');
+      btn.disabled = true;
+      btn.textContent = 'Importing...';
+      try {
+        var res = await fetch('/api/accounts/bulk', {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+          body: JSON.stringify({ raw: raw }),
+        });
+        var data = await res.json();
+        if (!res.ok) throw new Error(data?.error?.message || 'Bulk import failed');
+        showToast('Imported ' + data.successful + ' of ' + data.total + ' accounts', data.failed ? 'warning' : 'success');
+        document.getElementById('bulkInput').value = '';
+        loadAccounts();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import All';
+      }
+    });
+  }
+
   /* Table button delegation */
   document.getElementById('acctTable').addEventListener('click', function (e) {
     var btn = e.target;

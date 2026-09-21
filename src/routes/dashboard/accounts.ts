@@ -22,15 +22,27 @@ ${sidebarHtml('accounts')}
 
     <!-- Add Account Form -->
     <div class="panel">
-      <div class="panel-header open">
+      <div class="panel-header open" style="display:flex;justify-content:space-between;align-items:center">
         <span class="panel-title">Add Account</span>
+        <div style="display:flex;gap:6px">
+          <button type="button" id="tabSingleBtn" class="account-btn" style="padding:4px 10px;font-size:0.75rem;background:var(--accent);color:#fff">Single</button>
+          <button type="button" id="tabBulkBtn" class="account-btn" style="padding:4px 10px;font-size:0.75rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border)">Bulk Import</button>
+        </div>
       </div>
       <div class="panel-body open">
         <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:12px;line-height:1.5;background:var(--bg-elevated);padding:10px 14px;border-radius:var(--radius-sm)"><strong>⚠️ Best practice:</strong> Use <strong>3+ accounts</strong> for round-robin rotation to bypass cooldown limits. Do <strong>not</strong> use your personal Qwen account — create dedicated accounts.</div>
+        
         <form class="account-form" id="addForm">
           <input type="email" class="account-input" id="emailInput" placeholder="Email" required autocomplete="email">
           <input type="password" class="account-input" id="passwordInput" placeholder="Password" required autocomplete="new-password">
           <button type="submit" class="account-btn" id="addBtn">Add Account</button>
+        </form>
+
+        <form class="bulk-form" id="bulkForm" style="display:none;flex-direction:column;gap:10px">
+          <textarea id="bulkInput" class="account-input" rows="5" style="width:100%;resize:vertical;font-family:var(--mono);font-size:0.8rem;padding:8px" placeholder="email1@domain.com:password123&#10;email2@domain.com:password123&#10;(One per line, format: email:password or email,password)"></textarea>
+          <div style="display:flex;justify-content:flex-end">
+            <button type="submit" class="account-btn" id="bulkBtn">Import All</button>
+          </div>
         </form>
       </div>
     </div>

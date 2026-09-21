@@ -65,6 +65,73 @@ accountsRouter.post('/', async (c) => {
 });
 
 /**
+ * POST /api/accounts/bulk
+ * Add multiple accounts in bulk via array or raw text (email:password lines)
+ */
+accountsRouter.post('/bulk', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => null);
+    let items: Array<{ email: string; password: string }> = [];
+
+    if (body && Array.isArray(body.accounts)) {
+      items = body.accounts;
+    } else if (body && typeof body.raw === 'string') {
+      const lines = body.raw.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+        const separator = trimmed.includes(':') ? ':' : trimmed.includes(',') ? ',' : '\t';
+        const parts = trimmed.split(separator);
+        if (parts.length >= 2) {
+          items.push({ email: parts[0].trim(), password: parts.slice(1).join(separator).trim() });
+        }
+      }
+    } else {
+      return c.json({ error: { message: 'Invalid payload: provide accounts array or raw text (email:password)' } }, 400);
+    }
+
+    if (items.length === 0) {
+      return c.json({ error: { message: 'No valid accounts found in request' } }, 400);
+    }
+
+    const results: Array<{ email: string; success: boolean; loginSucceeded?: boolean; error?: string }> = [];
+
+    for (const item of items) {
+      if (!item.email || !item.password) {
+        results.push({ email: item.email || 'unknown', success: false, error: 'Email and password required' });
+        continue;
+      }
+      try {
+        const res = await addAccount(item.email, item.password);
+        results.push({
+          email: item.email.toLowerCase().trim(),
+          success: true,
+          loginSucceeded: res.loginSucceeded,
+          error: res.loginError,
+        });
+      } catch (err: any) {
+        results.push({
+          email: item.email.toLowerCase().trim(),
+          success: false,
+          error: err.message,
+        });
+      }
+    }
+
+    const successful = results.filter((r) => r.success).length;
+    return c.json({
+      total: items.length,
+      successful,
+      failed: items.length - successful,
+      results,
+    });
+  } catch (err: any) {
+    console.error('[Accounts] Bulk POST failed:', err.message);
+    return c.json({ error: { message: err.message || 'Failed to process bulk accounts' } }, 500);
+  }
+});
+
+/**
  * PATCH /api/accounts/:email
  * Update account properties (e.g. disabled)
  */
