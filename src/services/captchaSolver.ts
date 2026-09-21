@@ -182,148 +182,170 @@ async function findPuzzleOffset(bgBase64: string, _pieceBase64: string): Promise
 
 /**
  * Solve Aliyun puzzle captcha (the "Drag to complete the puzzle" type).
- * This appears after form submission as WAF challenge.
+ *
+ * Strategy:
+ * 1. Intercept Aliyun API response to get CDN back.png URL (more reliable than DOM img.src)
+ * 2. Download back.png directly from CDN for clean pixel data
+ * 3. Sobel edge-pair detection to find hole x position
+ * 4. JS event dispatch drag (Playwright mouse API doesn't work on Aliyun slider)
+ * 5. Handle post-solve navigation as success
  */
 async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult> {
-  // Step 1: Intercept the Aliyun captcha XHR to get CDN image URLs
-  // The API response contains Image (back.png) and PuzzleImage (shadow.png) paths
-  let captchaImageUrl = '';
-  let captchaBodyWidth = 300;
-
-  try {
-    captchaImageUrl = await page.evaluate(() => {
-      const img = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
-      return img ? img.src : '';
-    });
-    const bodyEl = await page.evaluate(() => {
-      const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
-      return body ? body.getBoundingClientRect().width : 300;
-    });
-    captchaBodyWidth = bodyEl || 300;
-  } catch {}
-
-  // Try to get the CDN URLs directly (intercepted from network)
-  // The back.png URL can be constructed from the img src or from XHR response
-  // img.src is a base64 data URL - we need to use it directly
+  // Pre-register response listener for CDN image URL BEFORE attempts start
+  let cdnBackUrl = '';
+  const responseHandler = async (res: any) => {
+    try {
+      const u: string = res.url();
+      if (u.includes('captcha-open-southeast') && !u.includes('-verify') && !u.includes('upload')) {
+        const body = await res.text();
+        const data = JSON.parse(body);
+        if (data.Image) {
+          cdnBackUrl = 'https://static-captcha-sgp.aliyuncs.com/' + data.Image;
+        }
+      }
+    } catch {}
+  };
+  try { page.on('response', responseHandler); } catch {}
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     logStore.log('info', 'captcha', `[PuzzleSolver] Attempt ${attempt}/${maxRetries}...`);
+    await new Promise((r) => setTimeout(r, 900));
 
-    // Wait for puzzle to fully render
-    await new Promise((r) => setTimeout(r, 800));
-
-    // Get slider position
-    const sliderInfo = await page.evaluate(() => {
-      const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
-      const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
-      if (!slider) return null;
-      const sliderBox = slider.getBoundingClientRect();
-      const bodyBox = body ? body.getBoundingClientRect() : null;
-      return {
-        sliderLeft: sliderBox.left,
-        sliderTop: sliderBox.top,
-        sliderWidth: sliderBox.width,
-        sliderHeight: sliderBox.height,
-        bodyWidth: bodyBox?.width ?? 300,
-      };
-    });
-
-    if (!sliderInfo) {
-      const bodyText = await page.evaluate(() => document.body.innerText || '');
+    // Check if captcha is gone already
+    try {
+      const bodyText: string = await page.evaluate(() => document.body?.innerText || '');
       if (!bodyText.includes('Drag to complete') && !bodyText.includes('Access Verification')) {
         return { success: true, type: 'aliyun_puzzle' };
       }
+    } catch (err: any) {
+      if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
+        logStore.log('info', 'captcha', '[PuzzleSolver] Navigation detected — puzzle solved!');
+        return { success: true, type: 'aliyun_puzzle' };
+      }
+      throw err;
+    }
+
+    // Get slider position
+    let sliderInfo: { sliderLeft: number; sliderTop: number; sliderWidth: number; sliderHeight: number; bodyWidth: number } | null = null;
+    try {
+      sliderInfo = await page.evaluate(() => {
+        const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
+        const body = document.querySelector('#aliyunCaptcha-sliding-body') as HTMLElement;
+        if (!slider) return null;
+        const sliderBox = slider.getBoundingClientRect();
+        const bodyBox = body ? body.getBoundingClientRect() : null;
+        return {
+          sliderLeft: sliderBox.left,
+          sliderTop: sliderBox.top,
+          sliderWidth: sliderBox.width,
+          sliderHeight: sliderBox.height,
+          bodyWidth: bodyBox?.width ?? 300,
+        };
+      });
+    } catch (err: any) {
+      if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
+        return { success: true, type: 'aliyun_puzzle' };
+      }
+    }
+
+    if (!sliderInfo) {
       logStore.log('warn', 'captcha', '[PuzzleSolver] Slider not found');
       if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1000)); continue; }
       return { success: false, error: 'Slider not found' };
     }
 
-    // Get background image from img.src (base64 PNG)
-    const bgSrc = await page.evaluate(() => {
-      const img = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
-      return img ? img.src : '';
-    });
+    // Get background image: prefer CDN URL (clean PNG), fallback to DOM img.src
+    let bgBase64 = '';
+    if (cdnBackUrl) {
+      try {
+        const resp = await fetch(cdnBackUrl, { signal: AbortSignal.timeout(8000) });
+        const buf = Buffer.from(await resp.arrayBuffer());
+        bgBase64 = 'data:image/png;base64,' + buf.toString('base64');
+        logStore.log('info', 'captcha', `[PuzzleSolver] Using CDN back.png (${buf.length} bytes)`);
+      } catch { cdnBackUrl = ''; }
+    }
+    if (!bgBase64) {
+      try {
+        bgBase64 = await page.evaluate(() => {
+          const img = document.querySelector('#aliyunCaptcha-img') as HTMLImageElement;
+          return img?.src || '';
+        });
+      } catch {}
+    }
 
-    if (!bgSrc || !bgSrc.includes('base64,')) {
+    if (!bgBase64 || !bgBase64.includes('base64,')) {
       logStore.log('warn', 'captcha', '[PuzzleSolver] Background image not available');
-      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1000)); continue; }
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1200)); continue; }
       return { success: false, error: 'Background image not found' };
     }
 
-    // Find puzzle hole offset using contextual darkening
-    const imagePixelOffset = await findPuzzleOffset(bgSrc, '');
+    // Detect hole position
+    const imagePixelOffset = await findPuzzleOffset(bgBase64, '');
     const scaleRatio = sliderInfo.bodyWidth / 296;
     const dragDistance = Math.round(imagePixelOffset * scaleRatio);
 
     logStore.log('info', 'captcha',
-      `[PuzzleSolver] Hole at x=${imagePixelOffset}px → drag ${dragDistance}px (scale=${scaleRatio.toFixed(3)})`
+      `[PuzzleSolver] Hole x=${imagePixelOffset}px → drag ${dragDistance}px (scale=${scaleRatio.toFixed(3)})`
     );
 
-    // Drag using JS event dispatch (Playwright mouse doesn't work on Aliyun)
-    const dragOk = await page.evaluate(async (params: {
-      startLeft: number; startTop: number; sliderW: number; sliderH: number; dist: number
-    }) => {
-      const { startLeft, startTop, sliderW, sliderH, dist } = params;
-      const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
-      if (!slider) return false;
-
-      const startX = startLeft + sliderW / 2;
-      const startY = startTop + sliderH / 2;
-
-      function fire(target: EventTarget, type: string, x: number, y: number, buttons: number) {
-        target.dispatchEvent(new MouseEvent(type, {
-          bubbles: true, cancelable: true,
-          clientX: x, clientY: y,
-          screenX: x + window.screenX, screenY: y + window.screenY,
-          buttons, button: buttons === 1 ? 0 : -1,
-        }));
+    // JS event dispatch drag — Playwright mouse API does not work on Aliyun slider
+    try {
+      await page.evaluate(async (params: {
+        startLeft: number; startTop: number; sliderW: number; sliderH: number; dist: number
+      }) => {
+        const { startLeft, startTop, sliderW, sliderH, dist } = params;
+        const slider = document.querySelector('#aliyunCaptcha-sliding-slider') as HTMLElement;
+        if (!slider) return;
+        const startX = startLeft + sliderW / 2;
+        const startY = startTop + sliderH / 2;
+        function fire(target: EventTarget, type: string, x: number, y: number, buttons: number) {
+          target.dispatchEvent(new MouseEvent(type, {
+            bubbles: true, cancelable: true,
+            clientX: x, clientY: y,
+            screenX: x + window.screenX, screenY: y + window.screenY,
+            buttons, button: buttons === 1 ? 0 : -1,
+          }));
+        }
+        fire(slider, 'mousedown', startX, startY, 1);
+        fire(document, 'mousedown', startX, startY, 1);
+        await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+        const steps = 38 + Math.floor(Math.random() * 6);
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+          fire(document, 'mousemove', startX + ease * dist, startY + (Math.random()-0.5)*0.5, 1);
+          await new Promise(r => setTimeout(r, 10 + Math.random() * 8));
+        }
+        await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
+        fire(document, 'mouseup', startX + dist, startY, 0);
+        fire(slider, 'mouseup', startX + dist, startY, 0);
+      }, { startLeft: sliderInfo.sliderLeft, startTop: sliderInfo.sliderTop, sliderW: sliderInfo.sliderWidth, sliderH: sliderInfo.sliderHeight, dist: dragDistance });
+    } catch (err: any) {
+      if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
+        logStore.log('info', 'captcha', '[PuzzleSolver] Navigation during drag — puzzle solved!');
+        return { success: true, type: 'aliyun_puzzle' };
       }
-
-      fire(slider, 'mousedown', startX, startY, 1);
-      fire(document, 'mousedown', startX, startY, 1);
-      await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
-
-      const steps = 40 + Math.floor(Math.random() * 6);
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps;
-        const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-        const nx = startX + ease * dist;
-        const jitter = (Math.random() - 0.5) * 0.6;
-        fire(document, 'mousemove', nx, startY + jitter, 1);
-        await new Promise(r => setTimeout(r, 10 + Math.random() * 8));
-      }
-      await new Promise(r => setTimeout(r, 80 + Math.random() * 60));
-
-      fire(document, 'mouseup', startX + dist, startY, 0);
-      fire(slider, 'mouseup', startX + dist, startY, 0);
-      return true;
-    }, { startLeft: sliderInfo.sliderLeft, startTop: sliderInfo.sliderTop, sliderW: sliderInfo.sliderWidth, sliderH: sliderInfo.sliderHeight, dist: dragDistance });
-
-    if (!dragOk) {
-      logStore.log('warn', 'captcha', '[PuzzleSolver] Slider JS drag failed');
+      logStore.log('warn', 'captcha', `[PuzzleSolver] Drag error: ${err.message}`);
       continue;
     }
 
-    // Wait for captcha result
-    await new Promise((r) => setTimeout(r, 2500));
+    // Wait and check result
+    await new Promise((r) => setTimeout(r, 2800));
 
     let resultState: { wafHidden: boolean; hasPuzzle: boolean; hasOtpInput: boolean };
     try {
       resultState = await page.evaluate(() => {
         const wafBlock = document.querySelector('#waf_nc_block') as HTMLElement;
         const bodyText = document.body.innerText || '';
-        const hasPuzzle = bodyText.includes('Drag to complete') || bodyText.includes('Access Verification');
-        const hasOtpInput = !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]');
         return {
           wafHidden: wafBlock?.style.display === 'none',
-          hasPuzzle,
-          hasOtpInput,
+          hasPuzzle: bodyText.includes('Drag to complete') || bodyText.includes('Access Verification'),
+          hasOtpInput: !!document.querySelector('input[name*="code"], input[name*="otp"], input[maxlength="6"]'),
         };
       });
     } catch (err: any) {
-      // Page navigated after successful solve
       if (err.message?.includes('context was destroyed') || err.message?.includes('navigation')) {
-        logStore.log('info', 'captcha', '[PuzzleSolver] Page navigated — solve succeeded!');
+        logStore.log('info', 'captcha', '[PuzzleSolver] Navigation after drag — puzzle solved!');
         return { success: true, type: 'aliyun_puzzle' };
       }
       throw err;
@@ -334,19 +356,22 @@ async function solveAliyunPuzzle(page: any, maxRetries = 3): Promise<SolveResult
       return { success: true, type: 'aliyun_puzzle' };
     }
 
-    logStore.log('warn', 'captcha', `[PuzzleSolver] Attempt ${attempt} failed`);
+    logStore.log('warn', 'captcha', `[PuzzleSolver] Attempt ${attempt} failed, server rejected`);
 
+    // Reset CDN URL for next attempt (new image on refresh)
+    cdnBackUrl = '';
     try {
       const refreshBtn = await page.$('#aliyunCaptcha-btn-refresh');
       if (refreshBtn && await refreshBtn.isVisible()) {
         await refreshBtn.click();
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 1800));
       }
     } catch {}
   }
 
   return { success: false, error: 'Exceeded max puzzle solve attempts' };
 }
+
 
 
 
