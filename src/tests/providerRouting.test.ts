@@ -65,6 +65,65 @@ describe('provider routing', () => {
   });
 });
 
+describe('tool calling passthrough', () => {
+  const tools = [
+    {
+      type: 'function',
+      function: {
+        name: 'get_weather',
+        description: 'get weather',
+        parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+      },
+    },
+  ];
+
+  // DeepSeek and GLM both document tool support (DeepSeek's pricing table lists
+  // "Tool Calls ✓" for deepseek-flash and deepseek-v4-pro; Z.AI documents
+  // function calling with `tools` + `tool_choice`). This pins that we actually
+  // forward the fields instead of silently dropping them, which is the failure
+  // mode the OpenAI validation schema had.
+  test('validation keeps tools and tool_choice', () => {
+    const r = validateOpenAIRequest({
+      model: 'deepseek-flash',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools,
+      tool_choice: 'auto',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const d = r.data as Record<string, unknown>;
+    expect(Array.isArray(d.tools)).toBe(true);
+    expect((d.tools as unknown[]).length).toBe(1);
+    expect(d.tool_choice).toBe('auto');
+  });
+
+  test('validation survives a tool-result round trip', () => {
+    // Second leg of a tool call: the client echoes the assistant's tool_calls
+    // and appends a `tool` message. Both must survive validation intact.
+    const r = validateOpenAIRequest({
+      model: 'glm-4.7-flash',
+      messages: [
+        { role: 'user', content: 'weather in Bandung?' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Bandung"}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: '24C' },
+      ],
+      tools,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const msgs = (r.data as Record<string, unknown>).messages as Record<string, unknown>[];
+    expect(msgs.length).toBe(3);
+    expect(msgs[1].role).toBe('assistant');
+    expect(Array.isArray(msgs[1].tool_calls)).toBe(true);
+    expect(msgs[2].role).toBe('tool');
+    expect(msgs[2].tool_call_id).toBe('call_1');
+  });
+});
+
 describe('OpenAI field passthrough', () => {
   // Regression: these were previously dropped by the Zod schema, so a client
   // sending temperature:0.5 silently got the upstream default.
